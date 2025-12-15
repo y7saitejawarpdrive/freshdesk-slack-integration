@@ -23,32 +23,38 @@ public class SlackController {
     }
 
     @PostMapping("/events")
-    public ResponseEntity<Map<String, String>> slackEvents(
-            @RequestBody Map<String, Object> body) {
+    public ResponseEntity<Map<String, String>> slackEvents(@RequestBody Map<String, Object> body) {
 
-        // URL verification
         if ("url_verification".equals(body.get("type"))) {
-            return ResponseEntity.ok(
-                    Map.of("challenge", body.get("challenge").toString())
-            );
+            return ResponseEntity.ok(Map.of("challenge", body.get("challenge").toString()));
         }
 
-        Map<String, Object> event =
-                (Map<String, Object>) body.get("event");
+        if (!body.containsKey("event")) {
+            return ResponseEntity.ok(Map.of("status", "ignored_no_event"));
+        }
 
-        // Ignore bot messages
-        if ("message".equals(event.get("type"))
-                && !event.containsKey("bot_id")) {
+        Map<String, Object> event = (Map<String, Object>) body.get("event");
 
-            String channelId = event.get("channel").toString();
-            String text = event.get("text").toString();
+        if ("message".equals(event.get("type")) && !event.containsKey("bot_id")) {
 
-            String ticketId = map.getTicketId(channelId);
-            if (ticketId != null) {
-                freshdeskService.addNote(
-                        ticketId,
-                        "💬 Slack:\n" + text
-                );
+            // --- FIX: IGNORE SYSTEM MESSAGES (Like joining channel) ---
+            if (event.containsKey("subtype")) {
+                System.out.println("⚠ Ignored subtype event: " + event.get("subtype"));
+                return ResponseEntity.ok(Map.of("status", "ignored_subtype"));
+            }
+
+            Object channelObj = event.get("channel");
+            Object textObj = event.get("text");
+
+            if (channelObj != null && textObj != null) {
+                String channelId = channelObj.toString();
+                String text = textObj.toString();
+
+                String ticketId = map.getTicketId(channelId);
+                if (ticketId != null) {
+                    freshdeskService.addNote(ticketId, "💬 Slack:\n" + text);
+                    System.out.println("✅ Forwarded to Freshdesk Ticket " + ticketId);
+                }
             }
         }
 
