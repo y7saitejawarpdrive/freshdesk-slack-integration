@@ -72,15 +72,18 @@ public class FreshdeskController {
             note = body.get("body").toString();
         }
 
-        // --- FIX: STOP THE ECHO ---
-        // If the note contains "Slack:", it means WE sent it. Don't send it back.
+        // 1. Check for Echo (Slack -> Freshdesk -> Slack)
         if (note.contains("Slack:")) {
             System.out.println("🛑 Ignored update because it originated from Slack.");
             return ResponseEntity.ok("Ignored echo");
         }
 
-        // --- OPTIONAL: Clean HTML tags ---
-        // Freshdesk sends <div> tags. Let's strip them for cleaner Slack messages.
+        // 2. NEW: Check for Freshdesk Retries (Duplicate messages)
+        if (map.isDuplicate(ticketId, note)) {
+            System.out.println("🛑 Ignored duplicate message (Freshdesk Retry) for Ticket " + ticketId);
+            return ResponseEntity.ok("Ignored duplicate");
+        }
+
         String cleanNote = note.replaceAll("\\<.*?\\>", "");
 
         String channelId = map.getChannelId(ticketId);
