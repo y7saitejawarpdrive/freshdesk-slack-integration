@@ -32,7 +32,6 @@ public class FreshdeskController {
         String region = body.get("region").toString().toLowerCase();
         String subject = body.getOrDefault("subject", "No Subject").toString();
 
-        // Strip HTML simply for description
         String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
         if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
 
@@ -62,18 +61,20 @@ public class FreshdeskController {
         String ticketId = body.get("ticket_id").toString();
         String rawHtml = "";
 
-        // Use 'latest_comment' (Mapped to {{comment.body}} in Freshdesk)
+        // Priority 1: latest_comment (from {{comment.body}})
         if (body.containsKey("latest_comment")) rawHtml = body.get("latest_comment").toString();
         else if (body.containsKey("latest_note")) rawHtml = body.get("latest_note").toString();
         else if (body.containsKey("body")) rawHtml = body.get("body").toString();
 
-        // LOGGING: See exactly what Freshdesk sent
-        System.out.println("📨 Freshdesk Raw HTML: " + rawHtml);
+        // 1. Check for Empty Updates (Status changes, etc)
+        if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) {
+            return ResponseEntity.ok("Ignored empty");
+        }
 
-        if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Empty");
+        // 2. Check for Echo (Slack -> FD -> Slack)
         if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // Duplicate check (use hash of raw HTML)
+        // 3. Check for Duplicate (Freshdesk Retries)
         if (map.isDuplicate(ticketId, rawHtml.trim())) {
             System.out.println("🛑 Ignored duplicate for " + ticketId);
             return ResponseEntity.ok("Duplicate");
@@ -82,26 +83,14 @@ public class FreshdeskController {
         String channelId = map.getChannelId(ticketId);
         if (channelId == null) return ResponseEntity.ok("No mapping");
 
-        // --- SAFE CONVERSION ---
-        String finalMessage;
-        try {
-            // 1. Try to extract links
-            String withLinks = convertHtmlLinks(rawHtml);
-            // 2. Strip remaining tags
-            finalMessage = withLinks.replaceAll("\\<.*?\\>", "").trim();
-            // 3. Decode entities
-            finalMessage = finalMessage.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
-        } catch (Exception e) {
-            // Fallback: If parsing fails, just dump raw text
-            System.out.println("⚠ HTML Parsing failed, sending raw text");
-            finalMessage = rawHtml.replaceAll("\\<.*?\\>", "");
-        }
+        // 4. Extract Links and Clean Message
+        String finalMessage = convertHtmlLinks(rawHtml);
+        finalMessage = finalMessage.replaceAll("\\<.*?\\>", "").trim(); // Remove tags
+        finalMessage = finalMessage.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
 
         if (!finalMessage.isEmpty()) {
             slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + finalMessage);
             System.out.println("✅ Sent to Slack: " + finalMessage);
-        } else {
-            System.out.println("⚠ Message became empty after stripping HTML!");
         }
 
         return ResponseEntity.ok("OK");
@@ -109,13 +98,13 @@ public class FreshdeskController {
 
     private String convertHtmlLinks(String html) {
         if (html == null) return "";
-        // Looks for <a href="URL">TEXT</a>
+        // Finds <a href="...">Text</a> and converts to Text (URL)
         Pattern pattern = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(html);
         StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
             String url = matcher.group(1);
-            String text = matcher.group(2).replaceAll("\\<.*?\\>", "").trim(); // Remove tags inside link text
+            String text = matcher.group(2).replaceAll("\\<.*?\\>", "").trim();
             matcher.appendReplacement(sb, text + " (" + url + ")");
         }
         matcher.appendTail(sb);

@@ -3,11 +3,9 @@ package com.example.demo.services;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -19,9 +17,14 @@ public class SlackService {
     @Value("${slack.bot.token}")
     private String slackBotToken;
 
-    private final WebClient webClient = WebClient.create("https://slack.com/api");
+    // 1. Configure WebClient with 16MB buffer for large PDF downloads
+    private final WebClient webClient = WebClient.builder()
+            .baseUrl("https://slack.com/api")
+            .exchangeStrategies(ExchangeStrategies.builder()
+                    .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
+                    .build())
+            .build();
 
-    // --- Channel & User Logic (Unchanged) ---
     public String createChannel(String channelName) {
         try {
             Map response = webClient.post().uri("/conversations.create")
@@ -45,7 +48,6 @@ public class SlackService {
             Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/conversations.list").queryParam("limit", 1000).queryParam("types", "public_channel,private_channel").build())
                     .header("Authorization", "Bearer " + slackBotToken)
                     .retrieve().bodyToMono(Map.class).block();
-
             if (response != null && (Boolean) response.get("ok")) {
                 List<Map<String, Object>> channels = (List<Map<String, Object>>) response.get("channels");
                 for (Map<String, Object> channel : channels) {
@@ -84,32 +86,23 @@ public class SlackService {
         } catch (Exception e) {}
     }
 
-    // --- FIX: ROBUST FILE DOWNLOADER ---
+    // --- FILE DOWNLOADER (Updated) ---
     public byte[] downloadFile(String fileUrl) {
         try {
-            System.out.println("⬇ Downloading file from: " + fileUrl);
-            URL url = new URL(fileUrl);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-
-            // CRITICAL: Slack requires the Bearer token to authorize the download
-            connection.setRequestProperty("Authorization", "Bearer " + slackBotToken);
-            connection.setRequestMethod("GET");
-
-            int responseCode = connection.getResponseCode();
-
-            // Handle Redirects manually if needed (Slack sometimes redirects to AWS S3)
-            if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM) {
-                String newUrl = connection.getHeaderField("Location");
-                System.out.println("⬇ Following redirect to: " + newUrl);
-                // Redirects to AWS S3 usually do NOT want the Bearer token anymore
-                connection = (HttpURLConnection) new URL(newUrl).openConnection();
-            }
-
-            try (InputStream in = connection.getInputStream()) {
-                return in.readAllBytes();
-            }
+            System.out.println("⬇ Downloading file: " + fileUrl);
+            // We use a specific client just for the file URL to avoid BaseURL conflicts
+            return WebClient.builder()
+                    .exchangeStrategies(ExchangeStrategies.builder()
+                            .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024)).build())
+                    .build()
+                    .get()
+                    .uri(fileUrl)
+                    .header("Authorization", "Bearer " + slackBotToken) // Token required for Private URL
+                    .retrieve()
+                    .bodyToMono(byte[].class)
+                    .block();
         } catch (Exception e) {
-            System.out.println("❌ Error downloading file: " + e.getMessage());
+            System.out.println("❌ Download Error: " + e.getMessage());
             return null;
         }
     }
