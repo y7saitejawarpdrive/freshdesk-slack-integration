@@ -18,18 +18,15 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // TODO: REPLACE THIS WITH THE ACTUAL SLACK MEMBER ID (e.g., U0123ABC)
-    private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
+    // TODO: ENSURE THIS ID IS CORRECT
+    private static final String SUPPORT_AGENT_ID = "U0123ABC";
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
-        System.out.println("🔥 Creating Ticket Payload: " + body);
-
         if (!body.containsKey("ticket_id")) return ResponseEntity.badRequest().body("Missing ticket_id");
 
         String ticketId = body.get("ticket_id").toString();
 
-        // --- 1. Extract New Fields ---
         String orderId = body.getOrDefault("order_id", "NA").toString();
         String issueType = body.getOrDefault("issue_type", "General").toString();
         String priority = body.getOrDefault("priority", "Low").toString();
@@ -37,29 +34,22 @@ public class FreshdeskController {
         String carrier = body.getOrDefault("carrier", "Unknown").toString();
         String lastScan = body.getOrDefault("last_scan", "Unknown").toString();
 
-        // --- 2. Generate Channel Name (#ticket-458923-delayed-delivery) ---
-        // Clean Order ID (remove special chars)
         String cleanOrderId = orderId.replaceAll("[^a-zA-Z0-9]", "");
-        if (cleanOrderId.isEmpty()) cleanOrderId = ticketId; // Fallback to Ticket ID if Order ID missing
-
-        // Clean Issue Type (spaces to hyphens)
+        if (cleanOrderId.isEmpty()) cleanOrderId = ticketId;
         String cleanIssue = issueType.toLowerCase().replaceAll("[^a-z0-9]", "-");
 
         String channelName = ("ticket-" + cleanOrderId + "-" + cleanIssue);
-        // Slack limit is 80 chars, truncate if needed
         if (channelName.length() > 80) channelName = channelName.substring(0, 80);
 
         if (map.getChannelId(ticketId) != null) return ResponseEntity.ok("Exists");
 
-        // --- 3. Create Channel ---
         String channelId = slackService.createChannel(channelName);
         if(channelId != null) {
             map.put(ticketId, channelId);
 
-            // --- 4. Formatted Welcome Message ---
             String msg = String.format(
-                    ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
-                            "Support Agent receives a call\n\n" +
+                    ":small_blue_diamond: Ticket Created in Freshdesk*\n" +
+
                             "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
@@ -71,8 +61,6 @@ public class FreshdeskController {
             );
 
             slackService.sendMessage(channelId, msg);
-
-            // --- 5. Invite the specific Support Agent ---
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
         }
         return ResponseEntity.ok("Created");
@@ -82,11 +70,9 @@ public class FreshdeskController {
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
 
-        // Sender Name
         Object senderObj = body.get("sender_name");
         String sender = (senderObj != null && !senderObj.toString().isEmpty()) ? senderObj.toString() : "Freshdesk Agent";
 
-        // Content
         String rawHtml = "";
         if (body.containsKey("comment_body") && body.get("comment_body") != null) rawHtml = body.get("comment_body").toString();
         if ((rawHtml.isEmpty() || rawHtml.equals("null")) && body.containsKey("public_comment")) {
@@ -99,9 +85,9 @@ public class FreshdeskController {
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
         if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // Duplicate Check
+        // --- RESTORED: BLOCK DUPLICATES ---
         if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Ignored duplicate");
+            System.out.println("🛑 Ignored duplicate (Freshdesk Retry)");
             return ResponseEntity.ok("Duplicate");
         }
 
