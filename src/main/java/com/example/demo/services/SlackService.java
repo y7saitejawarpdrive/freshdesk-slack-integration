@@ -3,6 +3,7 @@ package com.example.demo.services;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.Collections;
@@ -16,7 +17,13 @@ public class SlackService {
     @Value("${slack.bot.token}")
     private String slackBotToken;
 
-    private final WebClient webClient = WebClient.create("https://slack.com/api");
+    // FIX: Increase buffer size to 10MB (10 * 1024 * 1024) to prevent corrupted downloads
+    private final WebClient webClient = WebClient.builder()
+            .baseUrl("https://slack.com/api")
+            .exchangeStrategies(ExchangeStrategies.builder()
+                    .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
+                    .build())
+            .build();
 
     // --- Channel Logic ---
     public String createChannel(String channelName) {
@@ -34,12 +41,13 @@ public class SlackService {
                 Map channel = (Map) response.get("channel");
                 return channel.get("id").toString();
             } else if (response != null && "name_taken".equals(response.get("error"))) {
-                System.out.println("⚠ Channel name taken. Searching for existing ID...");
                 return findChannelIdByName(channelName);
             }
             throw new RuntimeException("Slack channel creation failed");
         } catch (Exception e) {
-            throw new RuntimeException("Error in createChannel: " + e.getMessage());
+            System.out.println("Error creating channel: " + e.getMessage());
+            // Attempt to find it anyway
+            return findChannelIdByName(channelName);
         }
     }
 
@@ -64,7 +72,7 @@ public class SlackService {
                 }
             }
         } catch (Exception e) {}
-        throw new RuntimeException("Channel exists but ID not found.");
+        return null;
     }
 
     public void sendMessage(String channelId, String text) {
@@ -78,7 +86,7 @@ public class SlackService {
                 .subscribe();
     }
 
-    // --- User Group Logic ---
+    // --- User Groups ---
     public List<String> getUserGroupMembers(String userGroupId) {
         try {
             Map response = webClient.get()
@@ -99,31 +107,38 @@ public class SlackService {
 
     public void inviteUsersToChannel(String channelId, List<String> userIds) {
         if (userIds == null || userIds.isEmpty()) return;
-        String usersCommaSeparated = String.join(",", userIds);
         try {
             webClient.post()
                     .uri("/conversations.invite")
                     .header("Authorization", "Bearer " + slackBotToken)
                     .header("Content-Type", "application/json")
-                    .bodyValue(Map.of("channel", channelId, "users", usersCommaSeparated))
+                    .bodyValue(Map.of("channel", channelId, "users", String.join(",", userIds)))
                     .retrieve()
                     .bodyToMono(String.class)
                     .subscribe();
         } catch (Exception e) {}
     }
 
-    // --- NEW: Download File ---
+    // --- Download File ---
     public byte[] downloadFile(String fileUrl) {
         try {
-            // NOTE: We do NOT use the base URL here, we use the specific fileUrl
-            return WebClient.create().get()
+            System.out.println("⬇ Downloading file from: " + fileUrl);
+            byte[] data = WebClient.builder()
+                    .exchangeStrategies(ExchangeStrategies.builder()
+                            .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
+                            .build())
+                    .build()
+                    .get()
                     .uri(fileUrl)
                     .header("Authorization", "Bearer " + slackBotToken)
                     .retrieve()
                     .bodyToMono(byte[].class)
                     .block();
+
+            System.out.println("✅ Download complete. Size: " + (data != null ? data.length : 0) + " bytes");
+            return data;
         } catch (Exception e) {
-            System.out.println("⚠ Error downloading file from Slack: " + e.getMessage());
+            System.out.println("⚠ Error downloading file: " + e.getMessage());
             return null;
         }
     }
