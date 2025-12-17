@@ -31,8 +31,8 @@ public class FreshdeskController {
         String ticketId = body.get("ticket_id").toString();
         String region = body.get("region").toString().toLowerCase();
         String subject = body.getOrDefault("subject", "No Subject").toString();
-        String priority = body.getOrDefault("priority", "Low").toString();
 
+        // Strip HTML for the initial channel description
         String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
         if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
 
@@ -60,29 +60,39 @@ public class FreshdeskController {
     @PostMapping("/ticket/updates")
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
-        String note = "";
+        String rawNote = "";
 
-        // Priority to 'latest_comment' which should now be {{comment.body}}
-        if (body.containsKey("latest_comment")) note = body.get("latest_comment").toString();
-        else if (body.containsKey("latest_note")) note = body.get("latest_note").toString();
-        else if (body.containsKey("body")) note = body.get("body").toString();
+        // Priority to 'latest_comment' (HTML from {{comment.body}})
+        if (body.containsKey("latest_comment")) rawNote = body.get("latest_comment").toString();
+        else if (body.containsKey("latest_note")) rawNote = body.get("latest_note").toString();
+        else if (body.containsKey("body")) rawNote = body.get("body").toString();
 
-        // 1. Check for Echo
-        if (note.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
+        // --- FIX 1: Ignore Empty/Status-Only Updates ---
+        // If rawNote is null or empty, this is just a status change. Stop.
+        if (rawNote == null || rawNote.trim().isEmpty() || rawNote.equals("null")) {
+            return ResponseEntity.ok("Ignored empty update");
+        }
 
-        // 2. Check for Duplicates (Repeating Bug)
-        // We log the hash code to see why it's failing if it does
-        if (map.isDuplicate(ticketId, note)) {
-            System.out.println("🛑 Blocked duplicate message for Ticket " + ticketId + " (Hash: " + note.hashCode() + ")");
+        // --- FIX 2: Echo Check ---
+        if (rawNote.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
+
+        // --- FIX 3: Stronger Duplicate Check ---
+        // We trim the note to ensure "Hello" and "Hello " are treated as duplicates
+        if (map.isDuplicate(ticketId, rawNote.trim())) {
+            System.out.println("🛑 Blocked duplicate for Ticket " + ticketId);
             return ResponseEntity.ok("Ignored duplicate");
         }
 
         String channelId = map.getChannelId(ticketId);
         if (channelId == null) return ResponseEntity.ok("Mapping missing");
 
-        // 3. Extract Links
-        String textWithLinks = convertHtmlLinks(note);
+        // --- FIX 4: Better Link Extraction ---
+        String textWithLinks = convertHtmlLinks(rawNote);
+
+        // Strip remaining HTML tags
         String cleanNote = textWithLinks.replaceAll("\\<.*?\\>", "").trim();
+        // Unescape HTML entities (like &amp; to &)
+        cleanNote = cleanNote.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
 
         if (!cleanNote.isEmpty()) {
             slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + cleanNote);
@@ -92,16 +102,16 @@ public class FreshdeskController {
         return ResponseEntity.ok("OK");
     }
 
-    // UPDATED REGEX: Handles newlines and different quote types
     private String convertHtmlLinks(String html) {
         if (html == null) return "";
-        // DOTALL mode allows . to match newlines
-        Pattern pattern = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        // Finds <a href="...">Text</a> even with attributes like target="_blank"
+        Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']*)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(html);
         StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
             String url = matcher.group(1);
             String text = matcher.group(2).trim();
+            // Result: "Filename.pdf (https://freshdesk...)"
             matcher.appendReplacement(sb, text + " (" + url + ")");
         }
         matcher.appendTail(sb);
