@@ -27,14 +27,11 @@ public class FreshdeskController {
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
         if (!body.containsKey("ticket_id") || !body.containsKey("region")) return ResponseEntity.badRequest().body("Missing data");
-
         String ticketId = body.get("ticket_id").toString();
         String region = body.get("region").toString().toLowerCase();
         String subject = body.getOrDefault("subject", "No Subject").toString();
-
         String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
         if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
-
         String channelName = ("ticket-" + ticketId + "-" + region).replaceAll("[^a-z0-9-]", "");
 
         if (map.getChannelId(ticketId) != null) return ResponseEntity.ok("Exists");
@@ -43,13 +40,9 @@ public class FreshdeskController {
         if(channelId != null) {
             map.put(ticketId, channelId);
             List<String> groupIds = USER_GROUPS_BY_REGION.getOrDefault(region, List.of());
-
             StringBuilder mentions = new StringBuilder();
             for (String gid : groupIds) mentions.append("<!subteam^").append(gid).append("> ");
-
-            String msg = String.format(":ticket: *New Ticket*\n*ID:* %s\n*Subject:* %s\n*Region:* %s\n*Desc:* %s\n\nWelcome %s",
-                    ticketId, subject, region, desc, mentions);
-
+            String msg = String.format(":ticket: *New Ticket*\n*ID:* %s\n*Subject:* %s\n*Region:* %s\n*Desc:* %s\n\nWelcome %s", ticketId, subject, region, desc, mentions);
             slackService.sendMessage(channelId, msg);
             for (String gid : groupIds) slackService.inviteUsersToChannel(channelId, slackService.getUserGroupMembers(gid));
         }
@@ -60,7 +53,7 @@ public class FreshdeskController {
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
 
-        // 1. Get Sender Name (Optional - kept if you want to see who sent it)
+        // 1. Get Sender
         String sender = "Freshdesk";
         if (body.containsKey("sender_name") && body.get("sender_name") != null) {
             sender = body.get("sender_name").toString();
@@ -79,11 +72,14 @@ public class FreshdeskController {
         System.out.println("📨 Update from " + sender + " | Content: " + rawHtml);
 
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
-
-        // Keep this to prevent infinite loops
         if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // --- DUPLICATE CHECK REMOVED HERE ---
+        // --- 3. RESTORED: DUPLICATE CHECK ---
+        // This stops the 5-minute retry loop
+        if (map.isDuplicate(ticketId, rawHtml.trim())) {
+            System.out.println("🛑 Ignored duplicate (Freshdesk Retry)");
+            return ResponseEntity.ok("Duplicate");
+        }
 
         String channelId = map.getChannelId(ticketId);
         if (channelId == null) {
@@ -97,7 +93,6 @@ public class FreshdeskController {
             cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
 
             if (!cleanMsg.isEmpty()) {
-                // Send message with Sender Name
                 String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
                 slackService.sendMessage(channelId, slackMsg);
                 System.out.println("✅ Sent to Slack!");
