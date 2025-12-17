@@ -26,30 +26,22 @@ public class FreshdeskController {
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
+        // (Keep your existing creation logic here - it is fine)
         if (!body.containsKey("ticket_id") || !body.containsKey("region")) return ResponseEntity.badRequest().body("Missing data");
-
         String ticketId = body.get("ticket_id").toString();
         String region = body.get("region").toString().toLowerCase();
         String subject = body.getOrDefault("subject", "No Subject").toString();
-
         String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
         if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
-
         String channelName = ("ticket-" + ticketId + "-" + region).replaceAll("[^a-z0-9-]", "");
-
         if (map.getChannelId(ticketId) != null) return ResponseEntity.ok("Exists");
-
         String channelId = slackService.createChannel(channelName);
         if(channelId != null) {
             map.put(ticketId, channelId);
             List<String> groupIds = USER_GROUPS_BY_REGION.getOrDefault(region, List.of());
-
             StringBuilder mentions = new StringBuilder();
             for (String gid : groupIds) mentions.append("<!subteam^").append(gid).append("> ");
-
-            String msg = String.format(":ticket: *New Ticket*\n*ID:* %s\n*Subject:* %s\n*Region:* %s\n*Desc:* %s\n\nWelcome %s",
-                    ticketId, subject, region, desc, mentions);
-
+            String msg = String.format(":ticket: *New Ticket*\n*ID:* %s\n*Subject:* %s\n*Region:* %s\n*Desc:* %s\n\nWelcome %s", ticketId, subject, region, desc, mentions);
             slackService.sendMessage(channelId, msg);
             for (String gid : groupIds) slackService.inviteUsersToChannel(channelId, slackService.getUserGroupMembers(gid));
         }
@@ -60,40 +52,25 @@ public class FreshdeskController {
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
 
-        // --- 1. THE CATCH-ALL LOGIC ---
-        String rawHtml = "";
-
-        // First, try the HTML version (Best for links)
-        if (body.containsKey("comment_body") && body.get("comment_body") != null) {
-            rawHtml = body.get("comment_body").toString();
+        // 1. Get Sender Name (New!)
+        String sender = "Freshdesk Agent";
+        if (body.containsKey("sender_name") && body.get("sender_name") != null) {
+            sender = body.get("sender_name").toString();
         }
 
-        // If empty, fallback to the text version (Backup)
+        // 2. Get Content (Catch-All)
+        String rawHtml = "";
+        if (body.containsKey("comment_body") && body.get("comment_body") != null) rawHtml = body.get("comment_body").toString();
         if ((rawHtml.isEmpty() || rawHtml.equals("null")) && body.containsKey("public_comment")) {
             Object pc = body.get("public_comment");
             if (pc != null) rawHtml = pc.toString();
         }
 
-        // Legacy fallback
-        if ((rawHtml.isEmpty() || rawHtml.equals("null")) && body.containsKey("latest_comment")) {
-            Object lc = body.get("latest_comment");
-            if (lc != null) rawHtml = lc.toString();
-        }
+        System.out.println("📨 Update from " + sender + " | Content: " + rawHtml);
 
-        System.out.println("📨 Update Ticket " + ticketId + " | Final Content: " + rawHtml);
-
-        // --- 2. VALIDATION ---
-        if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) {
-            // If it's STILL empty, it's just a status update (not a note)
-            return ResponseEntity.ok("Ignored empty");
-        }
-
+        if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
         if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
-
-        if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Ignored duplicate");
-            return ResponseEntity.ok("Duplicate");
-        }
+        if (map.isDuplicate(ticketId, rawHtml.trim())) return ResponseEntity.ok("Duplicate");
 
         String channelId = map.getChannelId(ticketId);
         if (channelId == null) {
@@ -101,21 +78,18 @@ public class FreshdeskController {
             return ResponseEntity.ok("No mapping");
         }
 
-        // --- 3. CLEANING ---
         try {
-            // Extract links first
             String withLinks = convertHtmlLinks(rawHtml);
-            // Remove tags
             String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-            // Decode entities
             cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
 
             if (!cleanMsg.isEmpty()) {
-                slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + cleanMsg);
+                // ADD SENDER NAME TO SLACK MESSAGE
+                String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
+                slackService.sendMessage(channelId, slackMsg);
                 System.out.println("✅ Sent to Slack!");
             }
         } catch (Exception e) {
-            // Absolute fallback: Send raw text if processing fails
             slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + rawHtml);
         }
 
@@ -125,7 +99,6 @@ public class FreshdeskController {
     private String convertHtmlLinks(String html) {
         if (html == null) return "";
         try {
-            // Finds <a href="...">Text</a> -> Text (URL)
             Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
             Matcher matcher = pattern.matcher(html);
             StringBuilder sb = new StringBuilder();
