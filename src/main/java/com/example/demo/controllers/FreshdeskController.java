@@ -6,7 +6,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -19,32 +18,62 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
-            "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
-            "hyderabad", List.of("S0A1B5UBYJ0", "S0A0S5E6MD5")
-    );
+    // TODO: REPLACE THIS WITH THE ACTUAL SLACK MEMBER ID (e.g., U0123ABC)
+    private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
-        if (!body.containsKey("ticket_id") || !body.containsKey("region")) return ResponseEntity.badRequest().body("Missing data");
+        System.out.println("🔥 Creating Ticket Payload: " + body);
+
+        if (!body.containsKey("ticket_id")) return ResponseEntity.badRequest().body("Missing ticket_id");
+
         String ticketId = body.get("ticket_id").toString();
-        String region = body.get("region").toString().toLowerCase();
-        String subject = body.getOrDefault("subject", "No Subject").toString();
-        String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
-        if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
-        String channelName = ("ticket-" + ticketId + "-" + region).replaceAll("[^a-z0-9-]", "");
+
+        // --- 1. Extract New Fields ---
+        String orderId = body.getOrDefault("order_id", "NA").toString();
+        String issueType = body.getOrDefault("issue_type", "General").toString();
+        String priority = body.getOrDefault("priority", "Low").toString();
+        String sla = body.getOrDefault("sla", "24 hours").toString();
+        String carrier = body.getOrDefault("carrier", "Unknown").toString();
+        String lastScan = body.getOrDefault("last_scan", "Unknown").toString();
+
+        // --- 2. Generate Channel Name (#ticket-458923-delayed-delivery) ---
+        // Clean Order ID (remove special chars)
+        String cleanOrderId = orderId.replaceAll("[^a-zA-Z0-9]", "");
+        if (cleanOrderId.isEmpty()) cleanOrderId = ticketId; // Fallback to Ticket ID if Order ID missing
+
+        // Clean Issue Type (spaces to hyphens)
+        String cleanIssue = issueType.toLowerCase().replaceAll("[^a-z0-9]", "-");
+
+        String channelName = ("ticket-" + cleanOrderId + "-" + cleanIssue);
+        // Slack limit is 80 chars, truncate if needed
+        if (channelName.length() > 80) channelName = channelName.substring(0, 80);
 
         if (map.getChannelId(ticketId) != null) return ResponseEntity.ok("Exists");
 
+        // --- 3. Create Channel ---
         String channelId = slackService.createChannel(channelName);
         if(channelId != null) {
             map.put(ticketId, channelId);
-            List<String> groupIds = USER_GROUPS_BY_REGION.getOrDefault(region, List.of());
-            StringBuilder mentions = new StringBuilder();
-            for (String gid : groupIds) mentions.append("<!subteam^").append(gid).append("> ");
-            String msg = String.format(":ticket: *New Ticket*\n*ID:* %s\n*Subject:* %s\n*Region:* %s\n*Desc:* %s\n\nWelcome %s", ticketId, subject, region, desc, mentions);
+
+            // --- 4. Formatted Welcome Message ---
+            String msg = String.format(
+                    ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
+                            "Support Agent receives a call\n\n" +
+                            "*Ticket details:*\n" +
+                            "• *Issue Type:* %s\n" +
+                            "• *Priority:* %s\n" +
+                            "• *SLA:* %s\n" +
+                            "• *Order ID:* %s\n" +
+                            "• *Carrier:* %s\n" +
+                            "• *Last Scan:* %s\n",
+                    issueType, priority, sla, orderId, carrier, lastScan
+            );
+
             slackService.sendMessage(channelId, msg);
-            for (String gid : groupIds) slackService.inviteUsersToChannel(channelId, slackService.getUserGroupMembers(gid));
+
+            // --- 5. Invite the specific Support Agent ---
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
         }
         return ResponseEntity.ok("Created");
     }
@@ -53,17 +82,13 @@ public class FreshdeskController {
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
 
-        // 1. Get Sender
-        String sender = "Freshdesk";
-        if (body.containsKey("sender_name") && body.get("sender_name") != null) {
-            sender = body.get("sender_name").toString();
-        }
+        // Sender Name
+        Object senderObj = body.get("sender_name");
+        String sender = (senderObj != null && !senderObj.toString().isEmpty()) ? senderObj.toString() : "Freshdesk Agent";
 
-        // 2. Get Content
+        // Content
         String rawHtml = "";
         if (body.containsKey("comment_body") && body.get("comment_body") != null) rawHtml = body.get("comment_body").toString();
-
-        // Fallback
         if ((rawHtml.isEmpty() || rawHtml.equals("null")) && body.containsKey("public_comment")) {
             Object pc = body.get("public_comment");
             if (pc != null) rawHtml = pc.toString();
@@ -74,10 +99,9 @@ public class FreshdeskController {
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
         if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // --- 3. RESTORED: DUPLICATE CHECK ---
-        // This stops the 5-minute retry loop
+        // Duplicate Check
         if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Ignored duplicate (Freshdesk Retry)");
+            System.out.println("🛑 Ignored duplicate");
             return ResponseEntity.ok("Duplicate");
         }
 
@@ -90,12 +114,11 @@ public class FreshdeskController {
         try {
             String withLinks = convertHtmlLinks(rawHtml);
             String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
 
             if (!cleanMsg.isEmpty()) {
                 String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
                 slackService.sendMessage(channelId, slackMsg);
-                System.out.println("✅ Sent to Slack!");
             }
         } catch (Exception e) {
             slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + rawHtml);

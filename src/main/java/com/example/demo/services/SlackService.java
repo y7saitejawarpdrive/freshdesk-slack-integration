@@ -3,6 +3,7 @@ package com.example.demo.services;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.io.ByteArrayOutputStream;
@@ -20,9 +21,13 @@ public class SlackService {
     @Value("${slack.bot.token}")
     private String slackBotToken;
 
-    private final WebClient webClient = WebClient.create("https://slack.com/api");
+    private final WebClient webClient = WebClient.builder()
+            .baseUrl("https://slack.com/api")
+            .exchangeStrategies(ExchangeStrategies.builder()
+                    .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
+                    .build())
+            .build();
 
-    // --- Channel & User Logic (Standard) ---
     public String createChannel(String channelName) {
         try {
             Map response = webClient.post().uri("/conversations.create")
@@ -30,6 +35,7 @@ public class SlackService {
                     .header("Content-Type", "application/json")
                     .bodyValue(Map.of("name", channelName, "is_private", false))
                     .retrieve().bodyToMono(Map.class).block();
+
             if (response != null && (Boolean) response.get("ok")) {
                 return ((Map) response.get("channel")).get("id").toString();
             } else if (response != null && "name_taken".equals(response.get("error"))) {
@@ -61,55 +67,37 @@ public class SlackService {
                 .retrieve().bodyToMono(String.class).subscribe();
     }
 
-    public List<String> getUserGroupMembers(String userGroupId) {
-        try {
-            Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/usergroups.users.list").queryParam("usergroup", userGroupId).queryParam("include_disabled", false).build())
-                    .header("Authorization", "Bearer " + slackBotToken).retrieve().bodyToMono(Map.class).block();
-            if (response != null && (Boolean) response.get("ok")) return (List<String>) response.get("users");
-        } catch (Exception e) {}
-        return Collections.emptyList();
-    }
-
-    public void inviteUsersToChannel(String channelId, List<String> userIds) {
-        if (userIds == null || userIds.isEmpty()) return;
+    public void inviteUserToChannel(String channelId, String userId) {
+        if (userId == null || userId.isEmpty()) return;
         try {
             webClient.post().uri("/conversations.invite")
                     .header("Authorization", "Bearer " + slackBotToken)
                     .header("Content-Type", "application/json")
-                    .bodyValue(Map.of("channel", channelId, "users", String.join(",", userIds)))
+                    .bodyValue(Map.of("channel", channelId, "users", userId))
                     .retrieve().bodyToMono(String.class).subscribe();
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            System.out.println("⚠ Invite failed (User likely already in channel): " + e.getMessage());
+        }
     }
 
-    // --- FIX: REDIRECT-SAFE DOWNLOADER ---
-    // This solves the 0-byte PDF issue
     public byte[] downloadFile(String fileUrl) {
         try {
-            System.out.println("⬇ Downloading file: " + fileUrl);
             URL url = new URL(fileUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("Authorization", "Bearer " + slackBotToken);
-            conn.setInstanceFollowRedirects(false); // Handle redirects manually
+            conn.setInstanceFollowRedirects(false);
 
             int status = conn.getResponseCode();
-            if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == HttpURLConnection.HTTP_MOVED_PERM || status == 307) {
-                String newUrl = conn.getHeaderField("Location");
-                System.out.println("⬇ Redirecting to AWS S3: " + newUrl);
-                // Connect to S3 WITHOUT the Bearer Token (AWS rejects extra headers)
-                conn = (HttpURLConnection) new URL(newUrl).openConnection();
+            if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == 307) {
+                conn = (HttpURLConnection) new URL(conn.getHeaderField("Location")).openConnection();
             }
 
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192]; // 8KB buffer
+                byte[] buffer = new byte[8192];
                 int bytesRead;
-                while ((bytesRead = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, bytesRead);
-                }
+                while ((bytesRead = in.read(buffer)) != -1) out.write(buffer, 0, bytesRead);
                 return out.toByteArray();
             }
-        } catch (Exception e) {
-            System.out.println("❌ Download Error: " + e.getMessage());
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 }
