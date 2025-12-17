@@ -8,7 +8,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -19,6 +18,7 @@ public class SlackService {
 
     private final WebClient webClient = WebClient.create("https://slack.com/api");
 
+    // --- Channel Logic ---
     public String createChannel(String channelName) {
         try {
             Map response = webClient.post()
@@ -30,17 +30,41 @@ public class SlackService {
                     .bodyToMono(Map.class)
                     .block();
 
-            if (response == null || !(Boolean) response.get("ok")) {
-                throw new RuntimeException("Slack channel creation failed: " + response);
+            if (response != null && (Boolean) response.get("ok")) {
+                Map channel = (Map) response.get("channel");
+                return channel.get("id").toString();
+            } else if (response != null && "name_taken".equals(response.get("error"))) {
+                System.out.println("⚠ Channel name taken. Searching for existing ID...");
+                return findChannelIdByName(channelName);
             }
-            Map channel = (Map) response.get("channel");
-            return channel.get("id").toString();
+            throw new RuntimeException("Slack channel creation failed");
         } catch (Exception e) {
-            System.out.println("⚠ Error creating channel (might exist): " + e.getMessage());
-            // If creation fails, we can't easily return an ID without searching.
-            // For now, let the controller handle the error.
-            throw e;
+            throw new RuntimeException("Error in createChannel: " + e.getMessage());
         }
+    }
+
+    private String findChannelIdByName(String channelName) {
+        try {
+            Map response = webClient.get()
+                    .uri(uriBuilder -> uriBuilder.path("/conversations.list")
+                            .queryParam("limit", 1000)
+                            .queryParam("types", "public_channel,private_channel")
+                            .build())
+                    .header("Authorization", "Bearer " + slackBotToken)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response != null && (Boolean) response.get("ok")) {
+                List<Map<String, Object>> channels = (List<Map<String, Object>>) response.get("channels");
+                for (Map<String, Object> channel : channels) {
+                    if (channel.get("name").equals(channelName)) {
+                        return channel.get("id").toString();
+                    }
+                }
+            }
+        } catch (Exception e) {}
+        throw new RuntimeException("Channel exists but ID not found.");
     }
 
     public void sendMessage(String channelId, String text) {
@@ -54,7 +78,7 @@ public class SlackService {
                 .subscribe();
     }
 
-    // --- NEW: Get User IDs from a User Group (e.g., S0A1L56DJ3B) ---
+    // --- User Group Logic ---
     public List<String> getUserGroupMembers(String userGroupId) {
         try {
             Map response = webClient.get()
@@ -66,23 +90,16 @@ public class SlackService {
                     .retrieve()
                     .bodyToMono(Map.class)
                     .block();
-
             if (response != null && (Boolean) response.get("ok")) {
                 return (List<String>) response.get("users");
             }
-        } catch (Exception e) {
-            System.out.println("⚠ Error fetching user group " + userGroupId + ": " + e.getMessage());
-        }
+        } catch (Exception e) {}
         return Collections.emptyList();
     }
 
-    // --- NEW: Invite Users to Channel ---
     public void inviteUsersToChannel(String channelId, List<String> userIds) {
         if (userIds == null || userIds.isEmpty()) return;
-
-        // Slack API expects comma-separated string of users
         String usersCommaSeparated = String.join(",", userIds);
-
         try {
             webClient.post()
                     .uri("/conversations.invite")
@@ -91,9 +108,23 @@ public class SlackService {
                     .bodyValue(Map.of("channel", channelId, "users", usersCommaSeparated))
                     .retrieve()
                     .bodyToMono(String.class)
-                    .subscribe(response -> System.out.println("✅ Invited users to " + channelId));
+                    .subscribe();
+        } catch (Exception e) {}
+    }
+
+    // --- NEW: Download File ---
+    public byte[] downloadFile(String fileUrl) {
+        try {
+            // NOTE: We do NOT use the base URL here, we use the specific fileUrl
+            return WebClient.create().get()
+                    .uri(fileUrl)
+                    .header("Authorization", "Bearer " + slackBotToken)
+                    .retrieve()
+                    .bodyToMono(byte[].class)
+                    .block();
         } catch (Exception e) {
-            System.out.println("⚠ Error inviting users (some might already be in channel): " + e.getMessage());
+            System.out.println("⚠ Error downloading file from Slack: " + e.getMessage());
+            return null;
         }
     }
 }
