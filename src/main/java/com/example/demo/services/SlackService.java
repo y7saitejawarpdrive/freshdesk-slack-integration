@@ -17,15 +17,14 @@ public class SlackService {
     @Value("${slack.bot.token}")
     private String slackBotToken;
 
-    // FIX: Increase buffer size to 10MB (10 * 1024 * 1024) to prevent corrupted downloads
+    // INCREASE MEMORY BUFFER to 16MB to allow PDF downloads
     private final WebClient webClient = WebClient.builder()
             .baseUrl("https://slack.com/api")
             .exchangeStrategies(ExchangeStrategies.builder()
-                    .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
+                    .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
                     .build())
             .build();
 
-    // --- Channel Logic ---
     public String createChannel(String channelName) {
         try {
             Map response = webClient.post()
@@ -43,10 +42,8 @@ public class SlackService {
             } else if (response != null && "name_taken".equals(response.get("error"))) {
                 return findChannelIdByName(channelName);
             }
-            throw new RuntimeException("Slack channel creation failed");
+            return null;
         } catch (Exception e) {
-            System.out.println("Error creating channel: " + e.getMessage());
-            // Attempt to find it anyway
             return findChannelIdByName(channelName);
         }
     }
@@ -54,10 +51,7 @@ public class SlackService {
     private String findChannelIdByName(String channelName) {
         try {
             Map response = webClient.get()
-                    .uri(uriBuilder -> uriBuilder.path("/conversations.list")
-                            .queryParam("limit", 1000)
-                            .queryParam("types", "public_channel,private_channel")
-                            .build())
+                    .uri(uriBuilder -> uriBuilder.path("/conversations.list").queryParam("limit", 1000).queryParam("types", "public_channel,private_channel").build())
                     .header("Authorization", "Bearer " + slackBotToken)
                     .retrieve()
                     .bodyToMono(Map.class)
@@ -66,9 +60,7 @@ public class SlackService {
             if (response != null && (Boolean) response.get("ok")) {
                 List<Map<String, Object>> channels = (List<Map<String, Object>>) response.get("channels");
                 for (Map<String, Object> channel : channels) {
-                    if (channel.get("name").equals(channelName)) {
-                        return channel.get("id").toString();
-                    }
+                    if (channel.get("name").equals(channelName)) return channel.get("id").toString();
                 }
             }
         } catch (Exception e) {}
@@ -86,21 +78,15 @@ public class SlackService {
                 .subscribe();
     }
 
-    // --- User Groups ---
     public List<String> getUserGroupMembers(String userGroupId) {
         try {
             Map response = webClient.get()
-                    .uri(uriBuilder -> uriBuilder.path("/usergroups.users.list")
-                            .queryParam("usergroup", userGroupId)
-                            .queryParam("include_disabled", false)
-                            .build())
+                    .uri(uriBuilder -> uriBuilder.path("/usergroups.users.list").queryParam("usergroup", userGroupId).queryParam("include_disabled", false).build())
                     .header("Authorization", "Bearer " + slackBotToken)
                     .retrieve()
                     .bodyToMono(Map.class)
                     .block();
-            if (response != null && (Boolean) response.get("ok")) {
-                return (List<String>) response.get("users");
-            }
+            if (response != null && (Boolean) response.get("ok")) return (List<String>) response.get("users");
         } catch (Exception e) {}
         return Collections.emptyList();
     }
@@ -119,14 +105,14 @@ public class SlackService {
         } catch (Exception e) {}
     }
 
-    // --- Download File ---
+    // --- FIX: Robust File Download ---
     public byte[] downloadFile(String fileUrl) {
         try {
-            System.out.println("⬇ Downloading file from: " + fileUrl);
-            byte[] data = WebClient.builder()
+            System.out.println("⬇ Downloading file: " + fileUrl);
+            // Create a dedicated client for file download to avoid base URL issues
+            return WebClient.builder()
                     .exchangeStrategies(ExchangeStrategies.builder()
-                            .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
-                            .build())
+                            .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024)).build())
                     .build()
                     .get()
                     .uri(fileUrl)
@@ -134,11 +120,8 @@ public class SlackService {
                     .retrieve()
                     .bodyToMono(byte[].class)
                     .block();
-
-            System.out.println("✅ Download complete. Size: " + (data != null ? data.length : 0) + " bytes");
-            return data;
         } catch (Exception e) {
-            System.out.println("⚠ Error downloading file: " + e.getMessage());
+            System.out.println("❌ Download Error: " + e.getMessage());
             return null;
         }
     }
