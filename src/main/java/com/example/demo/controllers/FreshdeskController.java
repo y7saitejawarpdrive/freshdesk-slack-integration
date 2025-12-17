@@ -26,6 +26,7 @@ public class FreshdeskController {
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
+        System.out.println("🔥 Creating Ticket: " + body); // DEBUG LOG
         if (!body.containsKey("ticket_id") || !body.containsKey("region")) return ResponseEntity.badRequest().body("Missing data");
 
         String ticketId = body.get("ticket_id").toString();
@@ -61,36 +62,58 @@ public class FreshdeskController {
         String ticketId = body.get("ticket_id").toString();
         String rawHtml = "";
 
-        // Priority 1: latest_comment (from {{comment.body}})
+        // Priority: latest_comment (from {{comment.body}})
         if (body.containsKey("latest_comment")) rawHtml = body.get("latest_comment").toString();
         else if (body.containsKey("latest_note")) rawHtml = body.get("latest_note").toString();
         else if (body.containsKey("body")) rawHtml = body.get("body").toString();
 
-        // 1. Check for Empty Updates (Status changes, etc)
+        // 1. Log what we received
+        System.out.println("📨 Update for Ticket " + ticketId + " | Raw Content: " + rawHtml);
+
+        // 2. Validate Content
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) {
+            System.out.println("⚠ Skipped: Content is empty/null");
             return ResponseEntity.ok("Ignored empty");
         }
 
-        // 2. Check for Echo (Slack -> FD -> Slack)
-        if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
+        // 3. Check Echo
+        if (rawHtml.contains("Slack:")) {
+            System.out.println("🛑 Skipped: Echo from Slack");
+            return ResponseEntity.ok("Ignored echo");
+        }
 
-        // 3. Check for Duplicate (Freshdesk Retries)
+        // 4. Check Duplicate
         if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Ignored duplicate for " + ticketId);
+            System.out.println("🛑 Skipped: Duplicate hash detected");
             return ResponseEntity.ok("Duplicate");
         }
 
+        // 5. Check Map (Did app restart?)
         String channelId = map.getChannelId(ticketId);
-        if (channelId == null) return ResponseEntity.ok("No mapping");
+        if (channelId == null) {
+            System.out.println("❌ ERROR: No channel mapping for Ticket " + ticketId + ". (RAM wiped?)");
+            return ResponseEntity.ok("No mapping");
+        }
 
-        // 4. Extract Links and Clean Message
-        String finalMessage = convertHtmlLinks(rawHtml);
-        finalMessage = finalMessage.replaceAll("\\<.*?\\>", "").trim(); // Remove tags
-        finalMessage = finalMessage.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+        // 6. Clean and Send
+        try {
+            // First convert links
+            String withLinks = convertHtmlLinks(rawHtml);
+            // Then strip tags
+            String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
+            // Decode entities
+            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
 
-        if (!finalMessage.isEmpty()) {
-            slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + finalMessage);
-            System.out.println("✅ Sent to Slack: " + finalMessage);
+            if (!cleanMsg.isEmpty()) {
+                slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + cleanMsg);
+                System.out.println("✅ Sent to Slack Channel " + channelId);
+            } else {
+                System.out.println("⚠ Message was empty after stripping HTML!");
+            }
+        } catch (Exception e) {
+            System.out.println("❌ Error parsing HTML: " + e.getMessage());
+            // Fallback: send raw text stripped
+            slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + rawHtml.replaceAll("\\<.*?\\>", ""));
         }
 
         return ResponseEntity.ok("OK");
@@ -98,16 +121,19 @@ public class FreshdeskController {
 
     private String convertHtmlLinks(String html) {
         if (html == null) return "";
-        // Finds <a href="...">Text</a> and converts to Text (URL)
-        Pattern pattern = Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-        Matcher matcher = pattern.matcher(html);
-        StringBuilder sb = new StringBuilder();
-        while (matcher.find()) {
-            String url = matcher.group(1);
-            String text = matcher.group(2).replaceAll("\\<.*?\\>", "").trim();
-            matcher.appendReplacement(sb, text + " (" + url + ")");
+        try {
+            Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']*)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+            Matcher matcher = pattern.matcher(html);
+            StringBuilder sb = new StringBuilder();
+            while (matcher.find()) {
+                String url = matcher.group(1);
+                String text = matcher.group(2).replaceAll("\\<.*?\\>", "").trim();
+                matcher.appendReplacement(sb, text + " (" + url + ")");
+            }
+            matcher.appendTail(sb);
+            return sb.toString();
+        } catch (Exception e) {
+            return html; // Return original if regex fails
         }
-        matcher.appendTail(sb);
-        return sb.toString();
     }
 }
