@@ -26,7 +26,7 @@ public class FreshdeskController {
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
-        System.out.println("🔥 Creating Ticket: " + body); // DEBUG LOG
+        System.out.println("🔥 Creating Ticket: " + body);
         if (!body.containsKey("ticket_id") || !body.containsKey("region")) return ResponseEntity.badRequest().body("Missing data");
 
         String ticketId = body.get("ticket_id").toString();
@@ -62,58 +62,48 @@ public class FreshdeskController {
         String ticketId = body.get("ticket_id").toString();
         String rawHtml = "";
 
-        // Priority: latest_comment (from {{comment.body}})
+        // 1. Get Content
         if (body.containsKey("latest_comment")) rawHtml = body.get("latest_comment").toString();
         else if (body.containsKey("latest_note")) rawHtml = body.get("latest_note").toString();
         else if (body.containsKey("body")) rawHtml = body.get("body").toString();
 
-        // 1. Log what we received
-        System.out.println("📨 Update for Ticket " + ticketId + " | Raw Content: " + rawHtml);
+        // 2. DEBUG: Log the exact content from Freshdesk
+        System.out.println("📨 Update Ticket " + ticketId + " | Content: " + rawHtml);
 
-        // 2. Validate Content
+        // 3. Validation
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) {
-            System.out.println("⚠ Skipped: Content is empty/null");
+            System.out.println("⚠ Skipped: Empty content.");
             return ResponseEntity.ok("Ignored empty");
         }
 
-        // 3. Check Echo
-        if (rawHtml.contains("Slack:")) {
-            System.out.println("🛑 Skipped: Echo from Slack");
-            return ResponseEntity.ok("Ignored echo");
-        }
+        if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // 4. Check Duplicate
         if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Skipped: Duplicate hash detected");
+            System.out.println("🛑 Skipped: Duplicate");
             return ResponseEntity.ok("Duplicate");
         }
 
-        // 5. Check Map (Did app restart?)
         String channelId = map.getChannelId(ticketId);
         if (channelId == null) {
-            System.out.println("❌ ERROR: No channel mapping for Ticket " + ticketId + ". (RAM wiped?)");
+            System.out.println("❌ ERROR: No channel mapping (App Restarted?)");
             return ResponseEntity.ok("No mapping");
         }
 
-        // 6. Clean and Send
+        // 4. Convert HTML Links and Clean Tags
         try {
-            // First convert links
             String withLinks = convertHtmlLinks(rawHtml);
-            // Then strip tags
             String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-            // Decode entities
-            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+            // Decode HTML entities
+            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
 
             if (!cleanMsg.isEmpty()) {
                 slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + cleanMsg);
-                System.out.println("✅ Sent to Slack Channel " + channelId);
+                System.out.println("✅ Sent to Slack!");
             } else {
-                System.out.println("⚠ Message was empty after stripping HTML!");
+                System.out.println("⚠ Msg empty after cleaning. Original was: " + rawHtml);
             }
         } catch (Exception e) {
-            System.out.println("❌ Error parsing HTML: " + e.getMessage());
-            // Fallback: send raw text stripped
-            slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + rawHtml.replaceAll("\\<.*?\\>", ""));
+            System.out.println("❌ Error processing text: " + e.getMessage());
         }
 
         return ResponseEntity.ok("OK");
@@ -122,7 +112,8 @@ public class FreshdeskController {
     private String convertHtmlLinks(String html) {
         if (html == null) return "";
         try {
-            Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']*)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+            // Extracts <a href="http...">File Name</a> -> File Name (http...)
+            Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
             Matcher matcher = pattern.matcher(html);
             StringBuilder sb = new StringBuilder();
             while (matcher.find()) {
@@ -132,8 +123,6 @@ public class FreshdeskController {
             }
             matcher.appendTail(sb);
             return sb.toString();
-        } catch (Exception e) {
-            return html; // Return original if regex fails
-        }
+        } catch (Exception e) { return html; }
     }
 }

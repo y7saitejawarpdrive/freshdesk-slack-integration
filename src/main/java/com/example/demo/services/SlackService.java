@@ -82,13 +82,14 @@ public class SlackService {
     }
 
     // --- FIX: REDIRECT-SAFE DOWNLOADER ---
+    // This solves the 0-byte PDF issue
     public byte[] downloadFile(String fileUrl) {
         try {
             System.out.println("⬇ Downloading file: " + fileUrl);
             URL url = new URL(fileUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("Authorization", "Bearer " + slackBotToken);
-            conn.setInstanceFollowRedirects(false); // We handle redirects manually
+            conn.setInstanceFollowRedirects(false); // Handle redirects manually
 
             int status = conn.getResponseCode();
             if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == HttpURLConnection.HTTP_MOVED_PERM || status == 307) {
@@ -99,7 +100,7 @@ public class SlackService {
             }
 
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192];
+                byte[] buffer = new byte[8192]; // 8KB buffer
                 int bytesRead;
                 while ((bytesRead = in.read(buffer)) != -1) {
                     out.write(buffer, 0, bytesRead);
