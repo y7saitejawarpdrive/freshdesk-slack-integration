@@ -28,27 +28,17 @@ public class SlackService {
                     .build())
             .build();
 
-    // --- NEW: Get User Real Name ---
     public String getUserName(String userId) {
         try {
-            Map response = webClient.get()
-                    .uri(uriBuilder -> uriBuilder.path("/users.info")
-                            .queryParam("user", userId)
-                            .build())
-                    .header("Authorization", "Bearer " + slackBotToken)
-                    .retrieve()
-                    .bodyToMono(Map.class)
-                    .block();
-
+            Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/users.info").queryParam("user", userId).build())
+                    .header("Authorization", "Bearer " + slackBotToken).retrieve().bodyToMono(Map.class).block();
             if (response != null && (Boolean) response.get("ok")) {
                 Map user = (Map) response.get("user");
                 Map profile = (Map) user.get("profile");
                 return profile.get("real_name").toString();
             }
-        } catch (Exception e) {
-            System.out.println("Error fetching user name: " + e.getMessage());
-        }
-        return "Slack User"; // Fallback
+        } catch (Exception e) {}
+        return "Slack User";
     }
 
     public String createChannel(String channelName) {
@@ -92,12 +82,20 @@ public class SlackService {
     public void inviteUserToChannel(String channelId, String userId) {
         if (userId == null || userId.isEmpty()) return;
         try {
+            System.out.println("👉 Inviting " + userId + " to " + channelId);
             webClient.post().uri("/conversations.invite")
                     .header("Authorization", "Bearer " + slackBotToken)
                     .header("Content-Type", "application/json")
                     .bodyValue(Map.of("channel", channelId, "users", userId))
-                    .retrieve().bodyToMono(String.class).subscribe();
-        } catch (Exception e) {}
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .subscribe(
+                            s -> System.out.println("✅ Invite response: " + s),
+                            e -> System.out.println("❌ Invite failed: " + e.getMessage())
+                    );
+        } catch (Exception e) {
+            System.out.println("❌ Invite Exception: " + e.getMessage());
+        }
     }
 
     public byte[] downloadFile(String fileUrl) {
@@ -119,11 +117,8 @@ public class SlackService {
         } catch (Exception e) { return null; }
     }
 
-    // --- UPDATED: Approval Buttons with Tagging ---
     public void sendApprovalMessage(String channelId, String ticketId, String etaInfo, String agentId) {
-        // Construct the Tag (e.g., <@U12345>)
         String agentTag = (agentId != null && !agentId.isEmpty()) ? "<@" + agentId + ">" : "Support";
-
         List<Map<String, Object>> blocks = List.of(
                 Map.of("type", "section", "text", Map.of("type", "mrkdwn",
                         "text", "⚠️ *SLA Breach Expected*\n" + agentTag + " Approval required.\n*ETA Update:* " + etaInfo)),
@@ -132,7 +127,6 @@ public class SlackService {
                         Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "❌ Reject"), "style", "danger", "action_id", "reject_" + ticketId)
                 ))
         );
-
         webClient.post().uri("/chat.postMessage")
                 .header("Authorization", "Bearer " + slackBotToken)
                 .header("Content-Type", "application/json")

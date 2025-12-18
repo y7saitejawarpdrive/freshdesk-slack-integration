@@ -19,13 +19,13 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
+    // TODO: DOUBLE CHECK THIS ID. It must look like U0123ABC (Not a name)
+    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
+
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
             "hyderabad", List.of("S0A1B5UBYJ0", "S0A0S5E6MD5")
     );
-
-    // TODO: ENSURE THIS ID IS CORRECT
-    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
@@ -66,6 +66,9 @@ public class FreshdeskController {
             );
 
             slackService.sendMessage(channelId, msg);
+
+            // Invite the Support Agent
+            System.out.println("👉 Attempting to invite Support Agent: " + SUPPORT_AGENT_ID);
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
         }
         return ResponseEntity.ok("Created");
@@ -87,34 +90,40 @@ public class FreshdeskController {
 
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
 
-        // --- STEP 1: CLEANUP FIRST (Fixes the Symbol Issue) ---
+        // --- FILTERING LOGIC ---
+
+        // 1. Clean HTML first
         String withLinks = convertHtmlLinks(rawHtml);
         String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-        // Remove the Emoji code and common entities
+
+        // 2. Remove weird entities (like the paperclip &#128206; and speech bubble)
         cleanMsg = cleanMsg.replace("&#128172;", "")
+                .replace("&#128206;", "")
                 .replace("&nbsp;", " ")
                 .replace("&amp;", "&")
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
                 .replace("&quot;", "\"");
 
-        // --- STEP 2: IGNORE SYSTEM MESSAGES (Fixes the Button Loop) ---
-        // If the note is just our own approval/rejection log, DO NOT send it back to Slack
-        if (cleanMsg.contains("✅ Approved by") || cleanMsg.contains("❌ Rejected by") || cleanMsg.contains("✅ Reroute Approved")) {
-            System.out.println("🛑 Ignored System Note: " + cleanMsg);
-            return ResponseEntity.ok("Ignored system note");
+        // 3. STOP FILE ECHO: If it contains the attachment emoji or "shared file" text we generated
+        if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) {
+            System.out.println("🛑 Ignored File Echo: " + cleanMsg);
+            return ResponseEntity.ok("Ignored file echo");
         }
 
-        // --- STEP 3: IGNORE ECHO ---
-        // Check if it starts with "Slack:" or contains the emoji we typically send
-        if (cleanMsg.contains("Slack:") || cleanMsg.contains("💬")) {
-            System.out.println("🛑 Ignored Echo");
+        // 4. STOP APPROVAL ECHO: If it contains our approval/rejection checkmarks
+        if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) {
+            System.out.println("🛑 Ignored System Status: " + cleanMsg);
+            return ResponseEntity.ok("Ignored system status");
+        }
+
+        // 5. STOP SLACK ECHO
+        if (cleanMsg.contains("Slack:")) {
             return ResponseEntity.ok("Ignored echo");
         }
 
-        // --- STEP 4: DUPLICATE CHECK ---
+        // 6. Duplicate Check
         if (map.isDuplicate(ticketId, cleanMsg.trim())) {
-            System.out.println("🛑 Ignored duplicate");
             return ResponseEntity.ok("Duplicate");
         }
 
