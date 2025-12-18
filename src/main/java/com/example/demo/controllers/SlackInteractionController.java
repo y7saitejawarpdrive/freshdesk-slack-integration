@@ -37,28 +37,27 @@ public class SlackInteractionController {
                 String ticketId = actionId.split("_")[1];
 
                 if (actionId.startsWith("approve_")) {
-                    freshdeskService.addNote(ticketId, "✅ Approved by " + managerName);
+                    System.out.println("✅ Button Clicked: Approve " + ticketId);
 
-                    // Return JSON to REPLACE the message (removes buttons)
+                    // 1. Add Note to Freshdesk
+                    freshdeskService.addNote(ticketId, "✅ Reroute Approved by " + managerName);
+
+                    // 2. IMMEDIATE RESPONSE: Replace buttons with text
                     return ResponseEntity.ok(Map.of(
                             "replace_original", "true",
-                            "text", "✅ *Approved by " + managerName + "*\nReroute initiated."
+                            "text", "✅ *Reroute Approved by " + managerName + "*"
                     ));
                 }
                 else if (actionId.startsWith("reject_")) {
+                    System.out.println("❌ Button Clicked: Reject " + ticketId);
+
+                    // 1. Add Note to Freshdesk
                     freshdeskService.addNote(ticketId, "❌ Rejected by " + managerName + ". Asking for alternative.");
 
-                    String rejectMsg = String.format(
-                            ":x: *Proposal Rejected by %s*\n" +
-                                    "The proposed delay is not acceptable.\n" +
-                                    "👉 *Please propose an alternate route or solution immediately.*",
-                            managerName
-                    );
-
-                    // Return JSON to REPLACE the message (removes buttons)
+                    // 2. IMMEDIATE RESPONSE: Replace buttons with text
                     return ResponseEntity.ok(Map.of(
                             "replace_original", "true",
-                            "text", rejectMsg
+                            "text", ":x: *Rejected by " + managerName + "*\nPlease propose an alternative."
                     ));
                 }
             }

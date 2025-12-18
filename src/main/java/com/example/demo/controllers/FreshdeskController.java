@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -18,15 +19,19 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
+    private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
+            "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
+            "hyderabad", List.of("S0A1B5UBYJ0", "S0A0S5E6MD5")
+    );
+
     // TODO: ENSURE THIS ID IS CORRECT
-    private static final String SUPPORT_AGENT_ID = "U0123ABC";
+    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
 
     @PostMapping("/ticket/creation")
     public ResponseEntity<String> onTicketCreate(@RequestBody Map<String, Object> body) {
         if (!body.containsKey("ticket_id")) return ResponseEntity.badRequest().body("Missing ticket_id");
 
         String ticketId = body.get("ticket_id").toString();
-
         String orderId = body.getOrDefault("order_id", "NA").toString();
         String issueType = body.getOrDefault("issue_type", "General").toString();
         String priority = body.getOrDefault("priority", "Low").toString();
@@ -48,8 +53,8 @@ public class FreshdeskController {
             map.put(ticketId, channelId);
 
             String msg = String.format(
-                    ":small_blue_diamond: Ticket Created in Freshdesk*\n" +
-
+                    ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
+                            "Support Agent receives a call\n\n" +
                             "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
@@ -80,14 +85,36 @@ public class FreshdeskController {
             if (pc != null) rawHtml = pc.toString();
         }
 
-        System.out.println("📨 Update from " + sender + " | Content: " + rawHtml);
-
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
-        if (rawHtml.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
 
-        // --- RESTORED: BLOCK DUPLICATES ---
-        if (map.isDuplicate(ticketId, rawHtml.trim())) {
-            System.out.println("🛑 Ignored duplicate (Freshdesk Retry)");
+        // --- STEP 1: CLEANUP FIRST (Fixes the Symbol Issue) ---
+        String withLinks = convertHtmlLinks(rawHtml);
+        String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
+        // Remove the Emoji code and common entities
+        cleanMsg = cleanMsg.replace("&#128172;", "")
+                .replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"");
+
+        // --- STEP 2: IGNORE SYSTEM MESSAGES (Fixes the Button Loop) ---
+        // If the note is just our own approval/rejection log, DO NOT send it back to Slack
+        if (cleanMsg.contains("✅ Approved by") || cleanMsg.contains("❌ Rejected by") || cleanMsg.contains("✅ Reroute Approved")) {
+            System.out.println("🛑 Ignored System Note: " + cleanMsg);
+            return ResponseEntity.ok("Ignored system note");
+        }
+
+        // --- STEP 3: IGNORE ECHO ---
+        // Check if it starts with "Slack:" or contains the emoji we typically send
+        if (cleanMsg.contains("Slack:") || cleanMsg.contains("💬")) {
+            System.out.println("🛑 Ignored Echo");
+            return ResponseEntity.ok("Ignored echo");
+        }
+
+        // --- STEP 4: DUPLICATE CHECK ---
+        if (map.isDuplicate(ticketId, cleanMsg.trim())) {
+            System.out.println("🛑 Ignored duplicate");
             return ResponseEntity.ok("Duplicate");
         }
 
@@ -97,17 +124,10 @@ public class FreshdeskController {
             return ResponseEntity.ok("No mapping");
         }
 
-        try {
-            String withLinks = convertHtmlLinks(rawHtml);
-            String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-            cleanMsg = cleanMsg.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
-
-            if (!cleanMsg.isEmpty()) {
-                String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
-                slackService.sendMessage(channelId, slackMsg);
-            }
-        } catch (Exception e) {
-            slackService.sendMessage(channelId, "📝 Freshdesk Update:\n" + rawHtml);
+        if (!cleanMsg.isEmpty()) {
+            String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
+            slackService.sendMessage(channelId, slackMsg);
+            System.out.println("✅ Sent to Slack!");
         }
 
         return ResponseEntity.ok("OK");
