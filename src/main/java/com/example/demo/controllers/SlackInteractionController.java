@@ -7,7 +7,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -26,9 +25,13 @@ public class SlackInteractionController {
     }
 
     @PostMapping(value = "/interactions", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-    public ResponseEntity<Map<String, Object>> handleInteractions(@RequestParam("payload") String payloadJson) {
+    public ResponseEntity<Void> handleInteractions(@RequestParam("payload") String payloadJson) {
         try {
             Map<String, Object> payload = objectMapper.readValue(payloadJson, Map.class);
+
+            // 1. Get the Response URL (The magic key to update the message)
+            String responseUrl = payload.get("response_url").toString();
+
             List<Map<String, Object>> actions = (List<Map<String, Object>>) payload.get("actions");
             Map<String, Object> user = (Map<String, Object>) payload.get("user");
             String managerName = user.get("username").toString();
@@ -40,33 +43,27 @@ public class SlackInteractionController {
                 if (actionId.startsWith("approve_")) {
                     System.out.println("✅ Approved by " + managerName);
 
-                    // 1. Sync to Freshdesk
+                    // Update Freshdesk
                     freshdeskService.addNote(ticketId, "✅ Reroute Approved by " + managerName);
 
-                    // 2. DISABLE BUTTONS: Return JSON to overwrite the message
-                    return ResponseEntity.ok(Map.of(
-                            "replace_original", true,
-                            "text", "✅ *Reroute Approved by " + managerName + "*",
-                            "blocks", Collections.emptyList() // Removes buttons
-                    ));
+                    // Update Slack (REMOVE BUTTONS INSTANTLY)
+                    slackService.updateInteractionMessage(responseUrl, "✅ *Reroute Approved by " + managerName + "*");
                 }
                 else if (actionId.startsWith("reject_")) {
                     System.out.println("❌ Rejected by " + managerName);
 
-                    // 1. Sync to Freshdesk
+                    // Update Freshdesk
                     freshdeskService.addNote(ticketId, "❌ Rejected by " + managerName + ". Asking for alternative.");
 
-                    // 2. DISABLE BUTTONS: Return JSON to overwrite the message
-                    return ResponseEntity.ok(Map.of(
-                            "replace_original", true,
-                            "text", ":x: *Rejected by " + managerName + "*\nPlease propose an alternative.",
-                            "blocks", Collections.emptyList() // Removes buttons
-                    ));
+                    // Update Slack (REMOVE BUTTONS INSTANTLY)
+                    String msg = String.format(":x: *Rejected by %s*\nPlease propose an alternative.", managerName);
+                    slackService.updateInteractionMessage(responseUrl, msg);
                 }
             }
         } catch (Exception e) {
             System.out.println("Error handling interaction: " + e.getMessage());
         }
+        // Return 200 OK immediately to tell Slack "We got it"
         return ResponseEntity.ok().build();
     }
 }

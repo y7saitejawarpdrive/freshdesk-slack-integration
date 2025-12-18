@@ -28,6 +28,29 @@ public class SlackService {
                     .build())
             .build();
 
+    // --- NEW: Update Message via Response URL (Deletes Buttons) ---
+    public void updateInteractionMessage(String responseUrl, String text) {
+        try {
+            // We use a fresh WebClient because responseUrl is a full URL (hooks.slack.com...)
+            WebClient.create().post()
+                    .uri(responseUrl)
+                    .header("Content-Type", "application/json")
+                    .bodyValue(Map.of(
+                            "replace_original", true,
+                            "text", text,
+                            "blocks", Collections.emptyList() // Empty list removes the buttons
+                    ))
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .subscribe(
+                            s -> System.out.println("✅ Buttons removed successfully."),
+                            e -> System.out.println("❌ Failed to remove buttons: " + e.getMessage())
+                    );
+        } catch (Exception e) {
+            System.out.println("Error updating interaction: " + e.getMessage());
+        }
+    }
+
     public String getUserName(String userId) {
         try {
             Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/users.info").queryParam("user", userId).build())
@@ -82,20 +105,12 @@ public class SlackService {
     public void inviteUserToChannel(String channelId, String userId) {
         if (userId == null || userId.isEmpty()) return;
         try {
-            System.out.println("👉 Inviting " + userId + " to " + channelId);
             webClient.post().uri("/conversations.invite")
                     .header("Authorization", "Bearer " + slackBotToken)
                     .header("Content-Type", "application/json")
                     .bodyValue(Map.of("channel", channelId, "users", userId))
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .subscribe(
-                            s -> System.out.println("✅ Invite response: " + s),
-                            e -> System.out.println("❌ Invite failed: " + e.getMessage())
-                    );
-        } catch (Exception e) {
-            System.out.println("❌ Invite Exception: " + e.getMessage());
-        }
+                    .retrieve().bodyToMono(String.class).subscribe();
+        } catch (Exception e) {}
     }
 
     public byte[] downloadFile(String fileUrl) {
