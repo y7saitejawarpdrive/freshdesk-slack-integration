@@ -22,7 +22,7 @@ public class SlackService {
     private String slackBotToken;
 
     // TODO: PUT YOUR TRIAGE CHANNEL ID HERE
-    private static final String TRIAGE_CHANNEL_ID = "C085Q6C8L62";
+    private static final String TRIAGE_CHANNEL_ID = "C0A0JC79LP9";
 
     private final WebClient webClient = WebClient.builder()
             .baseUrl("https://slack.com/api")
