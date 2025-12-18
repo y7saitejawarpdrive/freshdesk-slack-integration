@@ -35,7 +35,6 @@ public class SlackService {
                     .header("Content-Type", "application/json")
                     .bodyValue(Map.of("name", channelName, "is_private", false))
                     .retrieve().bodyToMono(Map.class).block();
-
             if (response != null && (Boolean) response.get("ok")) {
                 return ((Map) response.get("channel")).get("id").toString();
             } else if (response != null && "name_taken".equals(response.get("error"))) {
@@ -75,9 +74,7 @@ public class SlackService {
                     .header("Content-Type", "application/json")
                     .bodyValue(Map.of("channel", channelId, "users", userId))
                     .retrieve().bodyToMono(String.class).subscribe();
-        } catch (Exception e) {
-            System.out.println("⚠ Invite failed (User likely already in channel): " + e.getMessage());
-        }
+        } catch (Exception e) {}
     }
 
     public byte[] downloadFile(String fileUrl) {
@@ -86,12 +83,10 @@ public class SlackService {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("Authorization", "Bearer " + slackBotToken);
             conn.setInstanceFollowRedirects(false);
-
             int status = conn.getResponseCode();
             if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == 307) {
                 conn = (HttpURLConnection) new URL(conn.getHeaderField("Location")).openConnection();
             }
-
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[8192];
                 int bytesRead;
@@ -99,5 +94,22 @@ public class SlackService {
                 return out.toByteArray();
             }
         } catch (Exception e) { return null; }
+    }
+
+    // --- NEW: Approval Buttons ---
+    public void sendApprovalMessage(String channelId, String ticketId, String etaInfo) {
+        List<Map<String, Object>> blocks = List.of(
+                Map.of("type", "section", "text", Map.of("type", "mrkdwn", "text", "⚠️ *SLA Breach Expected*\nApproval required for alternate routing.\n*ETA Update:* " + etaInfo)),
+                Map.of("type", "actions", "elements", List.of(
+                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "✅ Approve Reroute"), "style", "primary", "action_id", "approve_" + ticketId),
+                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "❌ Reject"), "style", "danger", "action_id", "reject_" + ticketId)
+                ))
+        );
+
+        webClient.post().uri("/chat.postMessage")
+                .header("Authorization", "Bearer " + slackBotToken)
+                .header("Content-Type", "application/json")
+                .bodyValue(Map.of("channel", channelId, "blocks", blocks, "text", "SLA Breach - Approval Needed"))
+                .retrieve().bodyToMono(String.class).subscribe();
     }
 }

@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/slack")
@@ -41,35 +43,57 @@ public class SlackController {
             String ticketId = map.getTicketId(channelId);
 
             if (ticketId != null) {
-                // --- HANDLE FILES ---
+                // --- FILES ---
                 if (event.containsKey("files")) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
                     for (Map<String, Object> file : files) {
                         String urlPrivate = (String) file.get("url_private");
                         String name = (String) file.get("name");
-
-                        System.out.println("📥 Starting download for: " + name);
                         byte[] fileData = slackService.downloadFile(urlPrivate);
-
                         if (fileData != null && fileData.length > 0) {
-                            System.out.println("✅ Downloaded " + fileData.length + " bytes. Uploading to FD...");
                             freshdeskService.addNoteWithFile(ticketId, "📎 File from Slack: " + name, name, fileData);
-                        } else {
-                            System.out.println("❌ Download failed or empty: " + name);
                         }
                     }
                 }
-                // --- HANDLE TEXT ---
-                if (event.containsKey("text")) {
+                // --- TEXT ---
+                else if (event.containsKey("text")) {
                     String text = event.get("text").toString();
                     if(text != null && !text.isEmpty()) {
-                        if (!isFileShare || !text.contains("uploaded a file")) {
-                            freshdeskService.addNote(ticketId, "💬 Slack:\n" + text);
+
+                        // 1. Sync Text to Freshdesk
+                        freshdeskService.addNote(ticketId, "💬 Slack:\n" + text);
+
+                        // 2. LOGIC: ETA vs SLA Check
+                        if (text.toUpperCase().contains("ETA")) {
+                            System.out.println("⏰ ETA update detected: " + text);
+
+                            int etaHours = extractNumber(text);
+                            int slaHours = freshdeskService.getTicketSlaHours(ticketId);
+
+                            System.out.println("Comparing ETA: " + etaHours + " vs SLA: " + slaHours);
+
+                            if (etaHours > slaHours) {
+                                // Breach!
+                                slackService.sendApprovalMessage(channelId, ticketId, text);
+                                System.out.println("🚀 ETA > SLA. Approval Triggered.");
+                            } else {
+                                // Safe
+                                slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
+                            }
                         }
                     }
                 }
             }
         }
         return ResponseEntity.ok(Map.of("status", "ok"));
+    }
+
+    private int extractNumber(String text) {
+        try {
+            Pattern p = Pattern.compile("\\d+");
+            Matcher m = p.matcher(text);
+            if (m.find()) return Integer.parseInt(m.group());
+        } catch (Exception e) {}
+        return 0;
     }
 }

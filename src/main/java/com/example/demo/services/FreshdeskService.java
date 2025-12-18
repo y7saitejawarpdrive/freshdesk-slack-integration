@@ -24,7 +24,6 @@ public class FreshdeskService {
 
     private final WebClient webClient = WebClient.create();
 
-    // 1. Standard Text Note
     public void addNote(String ticketId, String text) {
         String url = "https://" + domain + "/api/v2/tickets/" + ticketId + "/notes";
         String auth = Base64.getEncoder().encodeToString((apiKey + ":X").getBytes());
@@ -34,27 +33,18 @@ public class FreshdeskService {
                 .header("Authorization", "Basic " + auth)
                 .header("Content-Type", "application/json")
                 .bodyValue(Map.of("body", text, "private", false))
-                .retrieve()
-                .bodyToMono(String.class)
-                .subscribe();
+                .retrieve().bodyToMono(String.class).subscribe();
     }
 
-    // 2. NEW: Upload File to Freshdesk
     public void addNoteWithFile(String ticketId, String text, String fileName, byte[] fileData) {
         String url = "https://" + domain + "/api/v2/tickets/" + ticketId + "/notes";
         String auth = Base64.getEncoder().encodeToString((apiKey + ":X").getBytes());
 
-        // Build the Multipart Request
         MultipartBodyBuilder builder = new MultipartBodyBuilder();
         builder.part("body", text);
         builder.part("private", "false");
-
-        // Attach the file
         builder.part("attachments[]", new ByteArrayResource(fileData) {
-            @Override
-            public String getFilename() {
-                return fileName;
-            }
+            @Override public String getFilename() { return fileName; }
         }, MediaType.APPLICATION_OCTET_STREAM);
 
         webClient.post()
@@ -62,11 +52,45 @@ public class FreshdeskService {
                 .header("Authorization", "Basic " + auth)
                 .contentType(MediaType.MULTIPART_FORM_DATA)
                 .body(BodyInserters.fromMultipartData(builder.build()))
-                .retrieve()
-                .bodyToMono(String.class)
-                .subscribe(
-                        success -> System.out.println("✅ File uploaded to Ticket " + ticketId),
-                        error -> System.out.println("❌ File upload failed: " + error.getMessage())
-                );
+                .retrieve().bodyToMono(String.class).subscribe();
+    }
+
+    public void updateTicketFields(String ticketId, Map<String, Object> fields) {
+        String url = "https://" + domain + "/api/v2/tickets/" + ticketId;
+        String auth = Base64.getEncoder().encodeToString((apiKey + ":X").getBytes());
+
+        webClient.put()
+                .uri(url)
+                .header("Authorization", "Basic " + auth)
+                .header("Content-Type", "application/json")
+                .bodyValue(fields)
+                .retrieve().bodyToMono(String.class).subscribe();
+    }
+
+    // --- NEW: Get SLA from Ticket Custom Fields ---
+    public int getTicketSlaHours(String ticketId) {
+        String url = "https://" + domain + "/api/v2/tickets/" + ticketId;
+        String auth = Base64.getEncoder().encodeToString((apiKey + ":X").getBytes());
+
+        try {
+            Map response = webClient.get()
+                    .uri(url)
+                    .header("Authorization", "Basic " + auth)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response != null) {
+                Map customFields = (Map) response.get("custom_fields");
+                if (customFields != null && customFields.containsKey("cf_sla")) {
+                    String slaString = customFields.get("cf_sla").toString(); // e.g. "8 hrs"
+                    String numberOnly = slaString.replaceAll("[^0-9]", "");
+                    return numberOnly.isEmpty() ? 0 : Integer.parseInt(numberOnly);
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("⚠ Error fetching SLA: " + e.getMessage());
+        }
+        return 0; // Default
     }
 }
