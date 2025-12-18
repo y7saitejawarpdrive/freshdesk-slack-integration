@@ -19,8 +19,8 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // TODO: DOUBLE CHECK THIS ID. It must look like U0123ABC (Not a name)
-    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
+    // TODO: CHECK ID
+    private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
@@ -66,9 +66,6 @@ public class FreshdeskController {
             );
 
             slackService.sendMessage(channelId, msg);
-
-            // Invite the Support Agent
-            System.out.println("👉 Attempting to invite Support Agent: " + SUPPORT_AGENT_ID);
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
         }
         return ResponseEntity.ok("Created");
@@ -90,13 +87,9 @@ public class FreshdeskController {
 
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
 
-        // --- FILTERING LOGIC ---
-
-        // 1. Clean HTML first
+        // --- FILTERING ---
         String withLinks = convertHtmlLinks(rawHtml);
         String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-
-        // 2. Remove weird entities (like the paperclip &#128206; and speech bubble)
         cleanMsg = cleanMsg.replace("&#128172;", "")
                 .replace("&#128206;", "")
                 .replace("&nbsp;", " ")
@@ -105,24 +98,23 @@ public class FreshdeskController {
                 .replace("&gt;", ">")
                 .replace("&quot;", "\"");
 
-        // 3. STOP FILE ECHO: If it contains the attachment emoji or "shared file" text we generated
-        if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) {
-            System.out.println("🛑 Ignored File Echo: " + cleanMsg);
-            return ResponseEntity.ok("Ignored file echo");
-        }
-
-        // 4. STOP APPROVAL ECHO: If it contains our approval/rejection checkmarks
-        if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) {
-            System.out.println("🛑 Ignored System Status: " + cleanMsg);
-            return ResponseEntity.ok("Ignored system status");
-        }
-
-        // 5. STOP SLACK ECHO
-        if (cleanMsg.contains("Slack:")) {
+        // 1. STOP TEXT ECHO (Crucial Fix)
+        // Checks for "Sai Teja (Slack):" or "Slack:"
+        if (cleanMsg.contains("(Slack):") || cleanMsg.contains("Slack:")) {
             return ResponseEntity.ok("Ignored echo");
         }
 
-        // 6. Duplicate Check
+        // 2. STOP FILE ECHO
+        if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) {
+            return ResponseEntity.ok("Ignored file echo");
+        }
+
+        // 3. STOP APPROVAL ECHO
+        if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) {
+            return ResponseEntity.ok("Ignored system status");
+        }
+
+        // 4. Duplicate Check
         if (map.isDuplicate(ticketId, cleanMsg.trim())) {
             return ResponseEntity.ok("Duplicate");
         }

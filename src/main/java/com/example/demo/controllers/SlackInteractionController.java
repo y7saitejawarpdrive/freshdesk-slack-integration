@@ -7,6 +7,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -37,27 +38,29 @@ public class SlackInteractionController {
                 String ticketId = actionId.split("_")[1];
 
                 if (actionId.startsWith("approve_")) {
-                    System.out.println("✅ Button Clicked: Approve " + ticketId);
+                    System.out.println("✅ Approved by " + managerName);
 
-                    // 1. Add Note to Freshdesk
+                    // 1. Sync to Freshdesk
                     freshdeskService.addNote(ticketId, "✅ Reroute Approved by " + managerName);
 
-                    // 2. IMMEDIATE RESPONSE: Replace buttons with text
+                    // 2. DISABLE BUTTONS: Return JSON to overwrite the message
                     return ResponseEntity.ok(Map.of(
-                            "replace_original", "true",
-                            "text", "✅ *Reroute Approved by " + managerName + "*"
+                            "replace_original", true,
+                            "text", "✅ *Reroute Approved by " + managerName + "*",
+                            "blocks", Collections.emptyList() // Removes buttons
                     ));
                 }
                 else if (actionId.startsWith("reject_")) {
-                    System.out.println("❌ Button Clicked: Reject " + ticketId);
+                    System.out.println("❌ Rejected by " + managerName);
 
-                    // 1. Add Note to Freshdesk
+                    // 1. Sync to Freshdesk
                     freshdeskService.addNote(ticketId, "❌ Rejected by " + managerName + ". Asking for alternative.");
 
-                    // 2. IMMEDIATE RESPONSE: Replace buttons with text
+                    // 2. DISABLE BUTTONS: Return JSON to overwrite the message
                     return ResponseEntity.ok(Map.of(
-                            "replace_original", "true",
-                            "text", ":x: *Rejected by " + managerName + "*\nPlease propose an alternative."
+                            "replace_original", true,
+                            "text", ":x: *Rejected by " + managerName + "*\nPlease propose an alternative.",
+                            "blocks", Collections.emptyList() // Removes buttons
                     ));
                 }
             }
