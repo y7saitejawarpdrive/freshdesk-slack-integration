@@ -4,6 +4,7 @@ import com.example.demo.services.FreshdeskService;
 import com.example.demo.services.SlackService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -24,25 +25,27 @@ public class SlackInteractionController {
     }
 
     @PostMapping(value = "/interactions", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-    public void handleInteractions(@RequestParam("payload") String payloadJson) {
+    public ResponseEntity<Map<String, Object>> handleInteractions(@RequestParam("payload") String payloadJson) {
         try {
             Map<String, Object> payload = objectMapper.readValue(payloadJson, Map.class);
             List<Map<String, Object>> actions = (List<Map<String, Object>>) payload.get("actions");
-            Map<String, Object> channel = (Map<String, Object>) payload.get("channel");
-            String channelId = channel.get("id").toString();
             Map<String, Object> user = (Map<String, Object>) payload.get("user");
             String managerName = user.get("username").toString();
 
             if (actions != null && !actions.isEmpty()) {
                 String actionId = actions.get(0).get("action_id").toString();
+                String ticketId = actionId.split("_")[1];
 
                 if (actionId.startsWith("approve_")) {
-                    String ticketId = actionId.split("_")[1];
-                    freshdeskService.addNote(ticketId, "✅ Reroute Approved by " + managerName);
-                    slackService.sendMessage(channelId, "✅ *Approved by " + managerName + "*\nReroute initiated.");
+                    freshdeskService.addNote(ticketId, "✅ Approved by " + managerName);
+
+                    // Return JSON to REPLACE the message (removes buttons)
+                    return ResponseEntity.ok(Map.of(
+                            "replace_original", "true",
+                            "text", "✅ *Approved by " + managerName + "*\nReroute initiated."
+                    ));
                 }
                 else if (actionId.startsWith("reject_")) {
-                    String ticketId = actionId.split("_")[1];
                     freshdeskService.addNote(ticketId, "❌ Rejected by " + managerName + ". Asking for alternative.");
 
                     String rejectMsg = String.format(
@@ -51,11 +54,17 @@ public class SlackInteractionController {
                                     "👉 *Please propose an alternate route or solution immediately.*",
                             managerName
                     );
-                    slackService.sendMessage(channelId, rejectMsg);
+
+                    // Return JSON to REPLACE the message (removes buttons)
+                    return ResponseEntity.ok(Map.of(
+                            "replace_original", "true",
+                            "text", rejectMsg
+                    ));
                 }
             }
         } catch (Exception e) {
             System.out.println("Error handling interaction: " + e.getMessage());
         }
+        return ResponseEntity.ok().build();
     }
 }

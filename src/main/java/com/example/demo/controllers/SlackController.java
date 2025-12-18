@@ -19,6 +19,10 @@ public class SlackController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
+    // We need this ID to tag them in the approval request
+    // Ensure this ID matches what is in FreshdeskController
+    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
+
     public SlackController(FreshdeskService freshdeskService, SlackService slackService, TicketChannelMap map) {
         this.freshdeskService = freshdeskService;
         this.slackService = slackService;
@@ -39,10 +43,17 @@ public class SlackController {
             if (event.containsKey("subtype") && !isFileShare) return ResponseEntity.ok(Map.of("status", "ignored_subtype"));
 
             Object channelObj = event.get("channel");
+            Object userObj = event.get("user"); // Get the Slack User ID
             String channelId = (channelObj != null) ? channelObj.toString() : null;
+            String userId = (userObj != null) ? userObj.toString() : null;
+
             String ticketId = map.getTicketId(channelId);
 
-            if (ticketId != null) {
+            if (ticketId != null && userId != null) {
+
+                // --- FETCH REAL NAME ---
+                String senderName = slackService.getUserName(userId);
+
                 // --- FILES ---
                 if (event.containsKey("files")) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
@@ -51,7 +62,7 @@ public class SlackController {
                         String name = (String) file.get("name");
                         byte[] fileData = slackService.downloadFile(urlPrivate);
                         if (fileData != null && fileData.length > 0) {
-                            freshdeskService.addNoteWithFile(ticketId, "📎 File from Slack: " + name, name, fileData);
+                            freshdeskService.addNoteWithFile(ticketId, "📎 " + senderName + " shared file: " + name, name, fileData);
                         }
                     }
                 }
@@ -60,24 +71,21 @@ public class SlackController {
                     String text = event.get("text").toString();
                     if(text != null && !text.isEmpty()) {
 
-                        // 1. Sync Text to Freshdesk
-                        freshdeskService.addNote(ticketId, "💬 Slack:\n" + text);
+                        // 1. Sync Text with Name
+                        freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
 
-                        // 2. LOGIC: ETA vs SLA Check
+                        // 2. Logic: Check for ETA
                         if (text.toUpperCase().contains("ETA")) {
                             System.out.println("⏰ ETA update detected: " + text);
 
                             int etaHours = extractNumber(text);
                             int slaHours = freshdeskService.getTicketSlaHours(ticketId);
 
-                            System.out.println("Comparing ETA: " + etaHours + " vs SLA: " + slaHours);
-
                             if (etaHours > slaHours) {
-                                // Breach!
-                                slackService.sendApprovalMessage(channelId, ticketId, text);
+                                // Pass the SUPPORT_AGENT_ID here to tag them!
+                                slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
                                 System.out.println("🚀 ETA > SLA. Approval Triggered.");
                             } else {
-                                // Safe
                                 slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
                             }
                         }

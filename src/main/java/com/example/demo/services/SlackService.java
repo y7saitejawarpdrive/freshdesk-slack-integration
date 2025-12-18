@@ -28,6 +28,29 @@ public class SlackService {
                     .build())
             .build();
 
+    // --- NEW: Get User Real Name ---
+    public String getUserName(String userId) {
+        try {
+            Map response = webClient.get()
+                    .uri(uriBuilder -> uriBuilder.path("/users.info")
+                            .queryParam("user", userId)
+                            .build())
+                    .header("Authorization", "Bearer " + slackBotToken)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response != null && (Boolean) response.get("ok")) {
+                Map user = (Map) response.get("user");
+                Map profile = (Map) user.get("profile");
+                return profile.get("real_name").toString();
+            }
+        } catch (Exception e) {
+            System.out.println("Error fetching user name: " + e.getMessage());
+        }
+        return "Slack User"; // Fallback
+    }
+
     public String createChannel(String channelName) {
         try {
             Map response = webClient.post().uri("/conversations.create")
@@ -96,12 +119,16 @@ public class SlackService {
         } catch (Exception e) { return null; }
     }
 
-    // --- NEW: Approval Buttons ---
-    public void sendApprovalMessage(String channelId, String ticketId, String etaInfo) {
+    // --- UPDATED: Approval Buttons with Tagging ---
+    public void sendApprovalMessage(String channelId, String ticketId, String etaInfo, String agentId) {
+        // Construct the Tag (e.g., <@U12345>)
+        String agentTag = (agentId != null && !agentId.isEmpty()) ? "<@" + agentId + ">" : "Support";
+
         List<Map<String, Object>> blocks = List.of(
-                Map.of("type", "section", "text", Map.of("type", "mrkdwn", "text", "⚠️ *SLA Breach Expected*\nApproval required for alternate routing.\n*ETA Update:* " + etaInfo)),
+                Map.of("type", "section", "text", Map.of("type", "mrkdwn",
+                        "text", "⚠️ *SLA Breach Expected*\n" + agentTag + " Approval required.\n*ETA Update:* " + etaInfo)),
                 Map.of("type", "actions", "elements", List.of(
-                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "✅ Approve Reroute"), "style", "primary", "action_id", "approve_" + ticketId),
+                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "✅ Approve"), "style", "primary", "action_id", "approve_" + ticketId),
                         Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "❌ Reject"), "style", "danger", "action_id", "reject_" + ticketId)
                 ))
         );
@@ -109,7 +136,7 @@ public class SlackService {
         webClient.post().uri("/chat.postMessage")
                 .header("Authorization", "Bearer " + slackBotToken)
                 .header("Content-Type", "application/json")
-                .bodyValue(Map.of("channel", channelId, "blocks", blocks, "text", "SLA Breach - Approval Needed"))
+                .bodyValue(Map.of("channel", channelId, "blocks", blocks, "text", "Approval Needed"))
                 .retrieve().bodyToMono(String.class).subscribe();
     }
 }
