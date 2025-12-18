@@ -12,7 +12,7 @@ public class TicketChannelMap {
     private final Map<String, String> channelToTicket = new ConcurrentHashMap<>();
     private final Map<String, String> ticketToChannel = new ConcurrentHashMap<>();
 
-    // History to stop Freshdesk Retry Spam
+    // RESTORED: History of message hashes
     private final Map<String, List<Integer>> ticketRecentHashes = new ConcurrentHashMap<>();
 
     public void put(String ticketId, String channelId) {
@@ -28,21 +28,34 @@ public class TicketChannelMap {
         return channelToTicket.get(channelId);
     }
 
+    // RESTORED: Check for duplicates
     public boolean isDuplicate(String ticketId, String messageContent) {
         if (messageContent == null) return false;
+
         int newHash = messageContent.trim().hashCode();
+
+        // Get history or create new
         List<Integer> hashes = ticketRecentHashes.computeIfAbsent(ticketId, k -> new CopyOnWriteArrayList<>());
 
-        if (hashes.contains(newHash)) return true;
+        if (hashes.contains(newHash)) {
+            return true; // Duplicate found!
+        }
 
         hashes.add(newHash);
-        if (hashes.size() > 20) hashes.remove(0);
+
+        // Keep last 20 messages only
+        if (hashes.size() > 20) {
+            hashes.remove(0);
+        }
+
         return false;
     }
 
     public void remove(String ticketId) {
         String channelId = ticketToChannel.remove(ticketId);
-        if (channelId != null) channelToTicket.remove(channelId);
+        if (channelId != null) {
+            channelToTicket.remove(channelId);
+        }
         ticketRecentHashes.remove(ticketId);
     }
 }
