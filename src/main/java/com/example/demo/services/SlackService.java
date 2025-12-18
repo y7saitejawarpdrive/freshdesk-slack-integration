@@ -21,6 +21,9 @@ public class SlackService {
     @Value("${slack.bot.token}")
     private String slackBotToken;
 
+    // TODO: YOUR TRIAGE CHANNEL ID
+    private static final String TRIAGE_CHANNEL_ID = "C0A0JC79LP9";
+
     private final WebClient webClient = WebClient.builder()
             .baseUrl("https://slack.com/api")
             .exchangeStrategies(ExchangeStrategies.builder()
@@ -28,124 +31,54 @@ public class SlackService {
                     .build())
             .build();
 
-    // --- NEW: Update Message via Response URL (Deletes Buttons) ---
-    public void updateInteractionMessage(String responseUrl, String text) {
-        try {
-            // We use a fresh WebClient because responseUrl is a full URL (hooks.slack.com...)
-            WebClient.create().post()
-                    .uri(responseUrl)
-                    .header("Content-Type", "application/json")
-                    .bodyValue(Map.of(
-                            "replace_original", true,
-                            "text", text,
-                            "blocks", Collections.emptyList() // Empty list removes the buttons
-                    ))
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .subscribe(
-                            s -> System.out.println("✅ Buttons removed successfully."),
-                            e -> System.out.println("❌ Failed to remove buttons: " + e.getMessage())
-                    );
-        } catch (Exception e) {
-            System.out.println("Error updating interaction: " + e.getMessage());
-        }
-    }
-
-    public String getUserName(String userId) {
-        try {
-            Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/users.info").queryParam("user", userId).build())
-                    .header("Authorization", "Bearer " + slackBotToken).retrieve().bodyToMono(Map.class).block();
-            if (response != null && (Boolean) response.get("ok")) {
-                Map user = (Map) response.get("user");
-                Map profile = (Map) user.get("profile");
-                return profile.get("real_name").toString();
-            }
-        } catch (Exception e) {}
-        return "Slack User";
-    }
-
-    public String createChannel(String channelName) {
-        try {
-            Map response = webClient.post().uri("/conversations.create")
-                    .header("Authorization", "Bearer " + slackBotToken)
-                    .header("Content-Type", "application/json")
-                    .bodyValue(Map.of("name", channelName, "is_private", false))
-                    .retrieve().bodyToMono(Map.class).block();
-            if (response != null && (Boolean) response.get("ok")) {
-                return ((Map) response.get("channel")).get("id").toString();
-            } else if (response != null && "name_taken".equals(response.get("error"))) {
-                return findChannelIdByName(channelName);
-            }
-            return null;
-        } catch (Exception e) { return findChannelIdByName(channelName); }
-    }
-
-    private String findChannelIdByName(String channelName) {
-        try {
-            Map response = webClient.get().uri(uriBuilder -> uriBuilder.path("/conversations.list").queryParam("limit", 1000).queryParam("types", "public_channel,private_channel").build())
-                    .header("Authorization", "Bearer " + slackBotToken).retrieve().bodyToMono(Map.class).block();
-            if (response != null && (Boolean) response.get("ok")) {
-                List<Map<String, Object>> channels = (List<Map<String, Object>>) response.get("channels");
-                for (Map<String, Object> channel : channels) {
-                    if (channel.get("name").equals(channelName)) return channel.get("id").toString();
-                }
-            }
-        } catch (Exception e) {}
-        return null;
-    }
-
-    public void sendMessage(String channelId, String text) {
-        webClient.post().uri("/chat.postMessage")
-                .header("Authorization", "Bearer " + slackBotToken)
-                .header("Content-Type", "application/json")
-                .bodyValue(Map.of("channel", channelId, "text", text))
-                .retrieve().bodyToMono(String.class).subscribe();
-    }
-
-    public void inviteUserToChannel(String channelId, String userId) {
-        if (userId == null || userId.isEmpty()) return;
-        try {
-            webClient.post().uri("/conversations.invite")
-                    .header("Authorization", "Bearer " + slackBotToken)
-                    .header("Content-Type", "application/json")
-                    .bodyValue(Map.of("channel", channelId, "users", userId))
-                    .retrieve().bodyToMono(String.class).subscribe();
-        } catch (Exception e) {}
-    }
-
-    public byte[] downloadFile(String fileUrl) {
-        try {
-            URL url = new URL(fileUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestProperty("Authorization", "Bearer " + slackBotToken);
-            conn.setInstanceFollowRedirects(false);
-            int status = conn.getResponseCode();
-            if (status == HttpURLConnection.HTTP_MOVED_TEMP || status == 307) {
-                conn = (HttpURLConnection) new URL(conn.getHeaderField("Location")).openConnection();
-            }
-            try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192];
-                int bytesRead;
-                while ((bytesRead = in.read(buffer)) != -1) out.write(buffer, 0, bytesRead);
-                return out.toByteArray();
-            }
-        } catch (Exception e) { return null; }
-    }
-
-    public void sendApprovalMessage(String channelId, String ticketId, String etaInfo, String agentId) {
-        String agentTag = (agentId != null && !agentId.isEmpty()) ? "<@" + agentId + ">" : "Support";
+    // --- NEW: Send Triage Card with USER SELECT Dropdown ---
+    public void sendTriageMessage(String ticketId, String issueType, String priority, String desc) {
         List<Map<String, Object>> blocks = List.of(
-                Map.of("type", "section", "text", Map.of("type", "mrkdwn",
-                        "text", "⚠️ *SLA Breach Expected*\n" + agentTag + " Approval required.\n*ETA Update:* " + etaInfo)),
-                Map.of("type", "actions", "elements", List.of(
-                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "✅ Approve"), "style", "primary", "action_id", "approve_" + ticketId),
-                        Map.of("type", "button", "text", Map.of("type", "plain_text", "text", "❌ Reject"), "style", "danger", "action_id", "reject_" + ticketId)
-                ))
+                Map.of("type", "header", "text", Map.of("type", "plain_text", "text", "🆕 Incoming Ticket #" + ticketId)),
+                Map.of("type", "section", "fields", List.of(
+                        Map.of("type", "mrkdwn", "text", "*Issue:* " + issueType),
+                        Map.of("type", "mrkdwn", "text", "*Priority:* " + priority)
+                )),
+                Map.of("type", "section", "text", Map.of("type", "mrkdwn", "text", "*Description:*\n" + desc)),
+                // THE ASSIGNMENT DROPDOWN
+                Map.of("type", "section",
+                        "text", Map.of("type", "mrkdwn", "text", "👉 *Assign this ticket to:*"),
+                        "accessory", Map.of(
+                                "type", "users_select",
+                                "placeholder", Map.of("type", "plain_text", "text", "Select Agent"),
+                                "action_id", "assign_" + ticketId // Embed Ticket ID here
+                        )
+                )
         );
+
         webClient.post().uri("/chat.postMessage")
                 .header("Authorization", "Bearer " + slackBotToken)
                 .header("Content-Type", "application/json")
-                .bodyValue(Map.of("channel", channelId, "blocks", blocks, "text", "Approval Needed"))
+                .bodyValue(Map.of("channel", TRIAGE_CHANNEL_ID, "blocks", blocks, "text", "New Ticket: " + ticketId))
                 .retrieve().bodyToMono(String.class).subscribe();
     }
+
+    // --- NEW: Update Card after Assignment ---
+    public void markTriageAsAssigned(String responseUrl, String ticketId, String assignedUserId, String newChannelId) {
+        List<Map<String, Object>> blocks = List.of(
+                Map.of("type", "section", "text", Map.of("type", "mrkdwn", "text", "✅ *Ticket #" + ticketId + " assigned to <@" + assignedUserId + ">*")),
+                Map.of("type", "section", "text", Map.of("type", "mrkdwn", "text", "Workflow started in <#" + newChannelId + ">"))
+        );
+
+        WebClient.create().post().uri(responseUrl)
+                .header("Content-Type", "application/json")
+                .bodyValue(Map.of("replace_original", true, "blocks", blocks))
+                .retrieve().bodyToMono(String.class).subscribe();
+    }
+
+    // ... (Keep all other helper methods: getUserName, createChannel, inviteUserToChannel, etc.) ...
+
+    public String getUserName(String userId) { /* Copy existing logic */ return "User"; }
+    public String createChannel(String channelName) { /* Copy existing logic */ return null; }
+    private String findChannelIdByName(String channelName) { /* Copy existing logic */ return null; }
+    public void sendMessage(String channelId, String text) { /* Copy existing logic */ }
+    public void inviteUserToChannel(String channelId, String userId) { /* Copy existing logic */ }
+    public byte[] downloadFile(String fileUrl) { /* Copy existing logic */ return null; }
+    public void sendApprovalMessage(String cid, String tid, String eta, String agent) { /* Copy existing logic */ }
+    public void updateInteractionMessage(String url, String text) { /* Copy existing logic */ }
 }
