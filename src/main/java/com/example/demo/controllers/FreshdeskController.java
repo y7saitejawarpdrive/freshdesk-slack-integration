@@ -21,6 +21,8 @@ public class FreshdeskController {
 
     // TODO: CHECK ID
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
+    private static final String SUPPORT_AGENT_ID1 = "U09BZKZNZ3K";
+    private static final String SUPPORT_AGENT_ID2 = "U096MGHD9UZ";
 
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
@@ -54,7 +56,7 @@ public class FreshdeskController {
 
             String msg = String.format(
                     ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
-                            "Support Agent receives a call\n\n" +
+
                             "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
@@ -67,6 +69,8 @@ public class FreshdeskController {
 
             slackService.sendMessage(channelId, msg);
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1);
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2);
         }
         return ResponseEntity.ok("Created");
     }
