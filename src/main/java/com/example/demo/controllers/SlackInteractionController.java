@@ -8,7 +8,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -35,7 +34,6 @@ public class SlackInteractionController {
             String responseUrl = payload.get("response_url").toString();
             List<Map<String, Object>> actions = (List<Map<String, Object>>) payload.get("actions");
 
-            // Who performed the action? (The Manager/Admin)
             Map<String, Object> user = (Map<String, Object>) payload.get("user");
             String managerName = user.get("username").toString();
 
@@ -43,34 +41,20 @@ public class SlackInteractionController {
                 Map<String, Object> action = actions.get(0);
                 String actionId = action.get("action_id").toString();
 
-                // --- CASE 1: ASSIGN TICKET (Dropdown Selection) ---
                 if (actionId.startsWith("assign_")) {
                     String ticketId = actionId.split("_")[1];
+                    String selectedUserId = ((Map) action.get("selected_user")).toString();
 
-                    // Extract the Selected User from the dropdown payload
-                    String selectedUserId = ((Map) action.get("selected_user")).toString(); // This is the User ID to invite!
-
-                    System.out.println("👉 Ticket " + ticketId + " assigned to " + selectedUserId + " by " + managerName);
-
-                    // 1. Create Channel
-                    String channelName = "ticket-" + ticketId + "-workroom";
+                    String channelName = "ticket-" + ticketId; // Simple name
                     String channelId = slackService.createChannel(channelName);
 
                     if (channelId != null) {
                         map.put(ticketId, channelId);
-
-                        // 2. Invite the SELECTED Agent (Not necessarily the one who clicked)
                         slackService.inviteUserToChannel(channelId, selectedUserId);
-
-                        // 3. Welcome Message
-                        slackService.sendMessage(channelId, "👋 Welcome <@" + selectedUserId + ">! You have been assigned Ticket #" + ticketId + ".");
-
-                        // 4. Update the Triage Card in #general
+                        slackService.sendMessage(channelId, "👋 Welcome <@" + selectedUserId + ">! Ticket #" + ticketId + " Assigned.");
                         slackService.markTriageAsAssigned(responseUrl, ticketId, selectedUserId, channelId);
                     }
                 }
-
-                // --- CASE 2: APPROVALS (Existing) ---
                 else if (actionId.startsWith("approve_")) {
                     String ticketId = actionId.split("_")[1];
                     freshdeskService.addNote(ticketId, "✅ Approved by " + managerName);
@@ -82,10 +66,7 @@ public class SlackInteractionController {
                     slackService.updateInteractionMessage(responseUrl, ":x: *Rejected by " + managerName + "*");
                 }
             }
-        } catch (Exception e) {
-            System.out.println("Error handling interaction: " + e.getMessage());
-            e.printStackTrace();
-        }
+        } catch (Exception e) { e.printStackTrace(); }
         return ResponseEntity.ok().build();
     }
 }
