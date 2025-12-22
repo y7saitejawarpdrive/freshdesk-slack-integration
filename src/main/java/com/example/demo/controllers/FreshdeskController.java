@@ -25,7 +25,7 @@ public class FreshdeskController {
     private static final String SUPPORT_AGENT_ID2 = "U096MGHD9UZ";
 
     // 2. THE WORKFLOW BOT ID (Ensure this is the correct ID for your workflow app)
-    private static final String WORKFLOW_BOT_ID = "U01234567";
+    private static final String WORKFLOW_BOT_ID = "Wf0A4405T77G";
 
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
