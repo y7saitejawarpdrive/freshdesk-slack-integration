@@ -19,10 +19,13 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // TODO: CHECK ID
+    // 1. YOUR AGENT IDs
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
     private static final String SUPPORT_AGENT_ID1 = "U09BZKZNZ3K";
     private static final String SUPPORT_AGENT_ID2 = "U096MGHD9UZ";
+
+    // 2. THE WORKFLOW BOT ID (Ensure this is the correct ID for your workflow app)
+    private static final String WORKFLOW_BOT_ID = "U01234567";
 
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
@@ -41,6 +44,10 @@ public class FreshdeskController {
         String carrier = body.getOrDefault("carrier", "Unknown").toString();
         String lastScan = body.getOrDefault("last_scan", "Unknown").toString();
 
+        // Clean and prepare Description
+        String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
+        if (desc.length() > 500) desc = desc.substring(0, 500) + "..."; // Limit length
+
         String cleanOrderId = orderId.replaceAll("[^a-zA-Z0-9]", "");
         if (cleanOrderId.isEmpty()) cleanOrderId = ticketId;
         String cleanIssue = issueType.toLowerCase().replaceAll("[^a-z0-9]", "-");
@@ -54,23 +61,30 @@ public class FreshdeskController {
         if(channelId != null) {
             map.put(ticketId, channelId);
 
+            // Added Description to the message below
             String msg = String.format(
                     ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
-
+                            "Support Agent receives a call\n\n" +
                             "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
                             "• *SLA:* %s\n" +
                             "• *Order ID:* %s\n" +
                             "• *Carrier:* %s\n" +
-                            "• *Last Scan:* %s\n",
-                    issueType, priority, sla, orderId, carrier, lastScan
+                            "• *Last Scan:* %s\n" +
+                            "• *Description:* %s\n", // Added Description field here
+                    issueType, priority, sla, orderId, carrier, lastScan, desc // Added desc variable
             );
 
             slackService.sendMessage(channelId, msg);
+
+            // Invite ALL Agents
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
-            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1);
-            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2);
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1); // Extra Agent 1
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2); // Extra Agent 2
+
+            // Invite the Workflow Bot (to fix permission errors)
+            slackService.inviteUserToChannel(channelId, WORKFLOW_BOT_ID);
         }
         return ResponseEntity.ok("Created");
     }
@@ -78,7 +92,6 @@ public class FreshdeskController {
     @PostMapping("/ticket/updates")
     public ResponseEntity<?> onTicketUpdate(@RequestBody Map<String, Object> body) {
         String ticketId = body.get("ticket_id").toString();
-
         Object senderObj = body.get("sender_name");
         String sender = (senderObj != null && !senderObj.toString().isEmpty()) ? senderObj.toString() : "Freshdesk Agent";
 
@@ -91,50 +104,20 @@ public class FreshdeskController {
 
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
 
-        // --- FILTERING ---
         String withLinks = convertHtmlLinks(rawHtml);
         String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-        cleanMsg = cleanMsg.replace("&#128172;", "")
-                .replace("&#128206;", "")
-                .replace("&nbsp;", " ")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&quot;", "\"");
+        cleanMsg = cleanMsg.replace("&#128172;", "").replace("&#128206;", "").replace("&nbsp;", " ")
+                .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
 
-        // 1. STOP TEXT ECHO (Crucial Fix)
-        // Checks for "Sai Teja (Slack):" or "Slack:"
-        if (cleanMsg.contains("(Slack):") || cleanMsg.contains("Slack:")) {
-            return ResponseEntity.ok("Ignored echo");
-        }
-
-        // 2. STOP FILE ECHO
-        if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) {
-            return ResponseEntity.ok("Ignored file echo");
-        }
-
-        // 3. STOP APPROVAL ECHO
-        if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) {
-            return ResponseEntity.ok("Ignored system status");
-        }
-
-        // 4. Duplicate Check
-        if (map.isDuplicate(ticketId, cleanMsg.trim())) {
-            return ResponseEntity.ok("Duplicate");
-        }
+        if (cleanMsg.contains("(Slack):") || cleanMsg.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
+        if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) return ResponseEntity.ok("Ignored file echo");
+        if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) return ResponseEntity.ok("Ignored system");
+        if (map.isDuplicate(ticketId, cleanMsg.trim())) return ResponseEntity.ok("Duplicate");
 
         String channelId = map.getChannelId(ticketId);
-        if (channelId == null) {
-            System.out.println("❌ No mapping for Ticket " + ticketId);
-            return ResponseEntity.ok("No mapping");
+        if (channelId != null && !cleanMsg.isEmpty()) {
+            slackService.sendMessage(channelId, "👤 *" + sender + "*: " + cleanMsg);
         }
-
-        if (!cleanMsg.isEmpty()) {
-            String slackMsg = String.format("👤 *%s*: %s", sender, cleanMsg);
-            slackService.sendMessage(channelId, slackMsg);
-            System.out.println("✅ Sent to Slack!");
-        }
-
         return ResponseEntity.ok("OK");
     }
 
@@ -144,11 +127,7 @@ public class FreshdeskController {
             Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
             Matcher matcher = pattern.matcher(html);
             StringBuilder sb = new StringBuilder();
-            while (matcher.find()) {
-                String url = matcher.group(1);
-                String text = matcher.group(2).replaceAll("\\<.*?\\>", "").trim();
-                matcher.appendReplacement(sb, text + " (" + url + ")");
-            }
+            while (matcher.find()) matcher.appendReplacement(sb, matcher.group(2).replaceAll("\\<.*?\\>", "").trim() + " (" + matcher.group(1) + ")");
             matcher.appendTail(sb);
             return sb.toString();
         } catch (Exception e) { return html; }
