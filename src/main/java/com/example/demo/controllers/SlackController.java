@@ -19,9 +19,8 @@ public class SlackController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // We need this ID to tag them in the approval request
-    // Ensure this ID matches what is in FreshdeskController
-    private static final String SUPPORT_AGENT_ID = "U085Q6D2E07";
+    // Ensure this is the correct Agent ID
+    private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     public SlackController(FreshdeskService freshdeskService, SlackService slackService, TicketChannelMap map) {
         this.freshdeskService = freshdeskService;
@@ -38,25 +37,22 @@ public class SlackController {
 
         Map<String, Object> event = (Map<String, Object>) body.get("event");
 
-        if ("message".equals(event.get("type")) && !event.containsKey("bot_id")) {
-            boolean isFileShare = "file_share".equals(event.get("subtype"));
-            if (event.containsKey("subtype") && !isFileShare) return ResponseEntity.ok(Map.of("status", "ignored_subtype"));
+        if ("message".equals(event.get("type"))) {
 
-            Object channelObj = event.get("channel");
-            Object userObj = event.get("user"); // Get the Slack User ID
-            String channelId = (channelObj != null) ? channelObj.toString() : null;
-            String userId = (userObj != null) ? userObj.toString() : null;
+            // Check if sender is a Bot/Workflow
+            boolean isBot = event.containsKey("bot_id");
 
+            String channelId = (event.get("channel") != null) ? event.get("channel").toString() : null;
             String ticketId = map.getTicketId(channelId);
 
-            if (ticketId != null && userId != null) {
+            if (ticketId != null) {
 
-                // --- FETCH REAL NAME ---
-                String senderName = slackService.getUserName(userId);
-
-                // --- FILES ---
-                if (event.containsKey("files")) {
+                // --- FILES (Strictly ignore Bots to prevent loops) ---
+                if (event.containsKey("files") && !isBot) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
+                    String userId = (event.get("user") != null) ? event.get("user").toString() : null;
+                    String senderName = (userId != null) ? slackService.getUserName(userId) : "User";
+
                     for (Map<String, Object> file : files) {
                         String urlPrivate = (String) file.get("url_private");
                         String name = (String) file.get("name");
@@ -69,24 +65,45 @@ public class SlackController {
                 // --- TEXT ---
                 else if (event.containsKey("text")) {
                     String text = event.get("text").toString();
-                    if(text != null && !text.isEmpty()) {
 
-                        // 1. Sync Text with Name
-                        freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
+                    if (text != null && !text.isEmpty()) {
 
-                        // 2. Logic: Check for ETA
-                        if (text.toUpperCase().contains("ETA")) {
-                            System.out.println("⏰ ETA update detected: " + text);
+                        // --- THE FIX IS HERE ---
+                        // We normally ignore bots (!isBot).
+                        // BUT, if the text contains "ETA", we allow it (because it's your Workflow).
+                        boolean isWorkflowUpdate = isBot && text.toUpperCase().contains("ETA");
 
-                            int etaHours = extractNumber(text);
-                            int slaHours = freshdeskService.getTicketSlaHours(ticketId);
+                        // Also, filter out our OWN Bot's messages (Freshdesk Agent updates) to prevent loops
+                        boolean isMyOwnBot = text.contains("Freshdesk Agent") || text.contains("New Ticket") || text.contains("Breach Expected");
 
-                            if (etaHours > slaHours) {
-                                // Pass the SUPPORT_AGENT_ID here to tag them!
-                                slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
-                                System.out.println("🚀 ETA > SLA. Approval Triggered.");
-                            } else {
-                                slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
+                        if ((!isBot || isWorkflowUpdate) && !isMyOwnBot) {
+
+                            // Determine Sender Name
+                            String userId = (event.get("user") != null) ? event.get("user").toString() : null;
+                            String senderName = "Ops Workflow";
+
+                            // If it's a real user, get their name. If it's a workflow (userId is null), keep "Ops Workflow"
+                            if (userId != null) {
+                                senderName = slackService.getUserName(userId);
+                            }
+
+                            // 1. Sync Text with Name
+                            freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
+
+                            // 2. Logic: Check for ETA
+                            if (text.toUpperCase().contains("ETA")) {
+                                System.out.println("⏰ ETA update detected: " + text);
+
+                                int etaHours = extractNumber(text);
+                                int slaHours = freshdeskService.getTicketSlaHours(ticketId);
+
+                                if (etaHours > slaHours) {
+                                    // Trigger Approval
+                                    slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
+                                    System.out.println("🚀 ETA > SLA. Approval Triggered.");
+                                } else {
+                                    slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
+                                }
                             }
                         }
                     }
