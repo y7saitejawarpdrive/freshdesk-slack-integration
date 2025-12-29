@@ -19,7 +19,6 @@ public class SlackController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // Ensure this is the correct Agent ID
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     public SlackController(FreshdeskService freshdeskService, SlackService slackService, TicketChannelMap map) {
@@ -39,15 +38,13 @@ public class SlackController {
 
         if ("message".equals(event.get("type"))) {
 
-            // Check if sender is a Bot/Workflow
             boolean isBot = event.containsKey("bot_id");
-
             String channelId = (event.get("channel") != null) ? event.get("channel").toString() : null;
             String ticketId = map.getTicketId(channelId);
 
             if (ticketId != null) {
 
-                // --- FILES (Strictly ignore Bots to prevent loops) ---
+                // --- FILES ---
                 if (event.containsKey("files") && !isBot) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
                     String userId = (event.get("user") != null) ? event.get("user").toString() : null;
@@ -68,39 +65,36 @@ public class SlackController {
 
                     if (text != null && !text.isEmpty()) {
 
-                        // --- THE FIX IS HERE ---
-                        // We normally ignore bots (!isBot).
-                        // BUT, if the text contains "ETA", we allow it (because it's your Workflow).
+                        // --- CRITICAL FIX: STOP THE LOOP ---
+                        // If the message contains phrases that THE BOT sends, ignore them immediately.
+                        if (text.contains("within SLA") ||
+                                text.contains("No approval needed") ||
+                                text.contains("SLA Breach Expected") ||
+                                text.startsWith("ℹ️") ||
+                                text.startsWith("⚠️")) {
+                            return ResponseEntity.ok(Map.of("status", "ignored_system_msg"));
+                        }
+
+                        // Check if it's a Workflow (Bot with "ETA" in text)
                         boolean isWorkflowUpdate = isBot && text.toUpperCase().contains("ETA");
 
-                        // Also, filter out our OWN Bot's messages (Freshdesk Agent updates) to prevent loops
-                        boolean isMyOwnBot = text.contains("Freshdesk Agent") || text.contains("New Ticket") || text.contains("Breach Expected");
+                        // Allow Real Users OR Workflow Updates
+                        if (!isBot || isWorkflowUpdate) {
 
-                        if ((!isBot || isWorkflowUpdate) && !isMyOwnBot) {
-
-                            // Determine Sender Name
                             String userId = (event.get("user") != null) ? event.get("user").toString() : null;
                             String senderName = "Ops Workflow";
+                            if (userId != null) senderName = slackService.getUserName(userId);
 
-                            // If it's a real user, get their name. If it's a workflow (userId is null), keep "Ops Workflow"
-                            if (userId != null) {
-                                senderName = slackService.getUserName(userId);
-                            }
-
-                            // 1. Sync Text with Name
+                            // 1. Sync Text
                             freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
 
-                            // 2. Logic: Check for ETA
+                            // 2. Logic: ETA Check
                             if (text.toUpperCase().contains("ETA")) {
-                                System.out.println("⏰ ETA update detected: " + text);
-
                                 int etaHours = extractNumber(text);
                                 int slaHours = freshdeskService.getTicketSlaHours(ticketId);
 
                                 if (etaHours > slaHours) {
-                                    // Trigger Approval
                                     slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
-                                    System.out.println("🚀 ETA > SLA. Approval Triggered.");
                                 } else {
                                     slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
                                 }
@@ -115,8 +109,7 @@ public class SlackController {
 
     private int extractNumber(String text) {
         try {
-            Pattern p = Pattern.compile("\\d+");
-            Matcher m = p.matcher(text);
+            Matcher m = Pattern.compile("\\d+").matcher(text);
             if (m.find()) return Integer.parseInt(m.group());
         } catch (Exception e) {}
         return 0;
