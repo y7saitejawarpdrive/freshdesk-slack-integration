@@ -63,8 +63,7 @@ public class FreshdeskController {
 
             // Added Description to the message below
             String msg = String.format(
-                    ":small_blue_diamond: *STEP 1: Ticket Created in Freshdesk*\n" +
-                            "Support Agent receives a call\n\n" +
+
                             "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
