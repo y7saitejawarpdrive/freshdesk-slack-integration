@@ -19,7 +19,6 @@ public class SlackController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // YOUR AGENT ID
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     public SlackController(FreshdeskService freshdeskService, SlackService slackService, TicketChannelMap map) {
@@ -45,7 +44,6 @@ public class SlackController {
 
             if (ticketId != null) {
 
-                // --- FILES ---
                 if (event.containsKey("files") && !isBot) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
                     String userId = (event.get("user") != null) ? event.get("user").toString() : null;
@@ -60,17 +58,15 @@ public class SlackController {
                         }
                     }
                 }
-                // --- TEXT ---
                 else if (event.containsKey("text")) {
                     String text = event.get("text").toString();
 
                     if (text != null && !text.isEmpty()) {
 
-                        // --- CRITICAL FIX: IGNORE SYSTEM MESSAGES ---
                         if (text.contains("within SLA") ||
                                 text.contains("No approval needed") ||
                                 text.contains("SLA Breach Expected") ||
-                                text.contains("Ticket details") ||         // <--- THIS STOPS THE AUTO-APPROVAL
+                                text.contains("Ticket details") ||
                                 text.startsWith("ℹ️") ||
                                 text.startsWith("⚠️")) {
                             return ResponseEntity.ok(Map.of("status", "ignored_system_msg"));
@@ -84,20 +80,24 @@ public class SlackController {
                             String senderName = "Ops Workflow";
                             if (userId != null) senderName = slackService.getUserName(userId);
 
-                            // 1. Sync Text
                             freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
 
-                            // 2. Logic: ETA Check
                             if (text.toUpperCase().contains("ETA")) {
                                 int etaHours = extractNumber(text);
-                                int slaHours = freshdeskService.getTicketSlaHours(ticketId);
 
-                                if (etaHours > 0) { // Only check if we actually found a number
+                                // --- FIX: GET SLA FROM MEMORY ---
+                                int slaHours = map.getSla(ticketId);
+
+                                System.out.println("DEBUG: Comparing ETA " + etaHours + " vs SLA " + slaHours);
+
+                                if (etaHours > 0 && slaHours > 0) { // Only compare if we have valid numbers
                                     if (etaHours > slaHours) {
                                         slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
                                     } else {
                                         slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
                                     }
+                                } else if (slaHours == 0 && etaHours > 0) {
+                                    System.out.println("⚠ SLA missing for comparison. Skipping approval.");
                                 }
                             }
                         }

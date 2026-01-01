@@ -19,13 +19,11 @@ public class FreshdeskController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
-    // 1. YOUR AGENT IDs
+    // YOUR AGENT IDs
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
     private static final String SUPPORT_AGENT_ID1 = "U09BZKZNZ3K";
     private static final String SUPPORT_AGENT_ID2 = "U096MGHD9UZ";
-
-    // 2. THE WORKFLOW BOT ID (Ensure this is the correct ID for your workflow app)
-    private static final String WORKFLOW_BOT_ID = "Wf0A4405T77G";
+    private static final String WORKFLOW_BOT_ID = "U01234567";
 
     private static final Map<String, List<String>> USER_GROUPS_BY_REGION = Map.of(
             "bengaluru", List.of("S0A1L56DJ3B", "S0A1APMTHD2"),
@@ -40,13 +38,12 @@ public class FreshdeskController {
         String orderId = body.getOrDefault("order_id", "NA").toString();
         String issueType = body.getOrDefault("issue_type", "General").toString();
         String priority = body.getOrDefault("priority", "Low").toString();
-        String sla = body.getOrDefault("sla", "24 hours").toString();
+        String sla = body.getOrDefault("sla", "0").toString(); // Default string
         String carrier = body.getOrDefault("carrier", "Unknown").toString();
         String lastScan = body.getOrDefault("last_scan", "Unknown").toString();
 
-        // Clean and prepare Description
         String desc = body.getOrDefault("description", "").toString().replaceAll("\\<.*?\\>", "").trim();
-        if (desc.length() > 500) desc = desc.substring(0, 500) + "..."; // Limit length
+        if (desc.length() > 500) desc = desc.substring(0, 500) + "...";
 
         String cleanOrderId = orderId.replaceAll("[^a-zA-Z0-9]", "");
         if (cleanOrderId.isEmpty()) cleanOrderId = ticketId;
@@ -61,28 +58,33 @@ public class FreshdeskController {
         if(channelId != null) {
             map.put(ticketId, channelId);
 
-            // Added Description to the message below
-            String msg = String.format(
+            // --- SAVE SLA TO MEMORY ---
+            try {
+                String slaNum = sla.replaceAll("[^0-9]", "");
+                int slaInt = slaNum.isEmpty() ? 0 : Integer.parseInt(slaNum);
+                map.putSla(ticketId, slaInt);
+                System.out.println("✅ Saved SLA for Ticket " + ticketId + ": " + slaInt + " hours");
+            } catch (Exception e) {
+                System.out.println("⚠ Could not parse SLA: " + sla);
+            }
 
-                            "*Ticket details:*\n" +
+            String msg = String.format(
+                    "*Ticket details:*\n" +
                             "• *Issue Type:* %s\n" +
                             "• *Priority:* %s\n" +
                             "• *SLA:* %s\n" +
                             "• *Order ID:* %s\n" +
                             "• *Carrier:* %s\n" +
                             "• *Last Scan:* %s\n" +
-                            "• *Description:* %s\n", // Added Description field here
-                    issueType, priority, sla, orderId, carrier, lastScan, desc // Added desc variable
+                            "• *Description:* %s\n",
+                    issueType, priority, sla, orderId, carrier, lastScan, desc
             );
 
             slackService.sendMessage(channelId, msg);
 
-            // Invite ALL Agents
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
-            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1); // Extra Agent 1
-            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2); // Extra Agent 2
-
-            // Invite the Workflow Bot (to fix permission errors)
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1);
+            slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2);
             slackService.inviteUserToChannel(channelId, WORKFLOW_BOT_ID);
         }
         return ResponseEntity.ok("Created");
