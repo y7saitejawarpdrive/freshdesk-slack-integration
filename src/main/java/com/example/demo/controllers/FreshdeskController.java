@@ -38,7 +38,7 @@ public class FreshdeskController {
         String orderId = body.getOrDefault("order_id", "NA").toString();
         String issueType = body.getOrDefault("issue_type", "General").toString();
         String priority = body.getOrDefault("priority", "Low").toString();
-        String sla = body.getOrDefault("sla", "0").toString(); // Default string
+        String sla = body.getOrDefault("sla", "0").toString();
         String carrier = body.getOrDefault("carrier", "Unknown").toString();
         String lastScan = body.getOrDefault("last_scan", "Unknown").toString();
 
@@ -58,15 +58,12 @@ public class FreshdeskController {
         if(channelId != null) {
             map.put(ticketId, channelId);
 
-            // --- SAVE SLA TO MEMORY ---
+            // Save SLA
             try {
                 String slaNum = sla.replaceAll("[^0-9]", "");
                 int slaInt = slaNum.isEmpty() ? 0 : Integer.parseInt(slaNum);
                 map.putSla(ticketId, slaInt);
-                System.out.println("✅ Saved SLA for Ticket " + ticketId + ": " + slaInt + " hours");
-            } catch (Exception e) {
-                System.out.println("⚠ Could not parse SLA: " + sla);
-            }
+            } catch (Exception e) {}
 
             String msg = String.format(
                     "*Ticket details:*\n" +
@@ -81,7 +78,6 @@ public class FreshdeskController {
             );
 
             slackService.sendMessage(channelId, msg);
-
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID);
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID1);
             slackService.inviteUserToChannel(channelId, SUPPORT_AGENT_ID2);
@@ -105,32 +101,77 @@ public class FreshdeskController {
 
         if (rawHtml == null || rawHtml.trim().isEmpty() || rawHtml.equals("null")) return ResponseEntity.ok("Ignored empty");
 
-        String withLinks = convertHtmlLinks(rawHtml);
-        String cleanMsg = withLinks.replaceAll("\\<.*?\\>", "").trim();
-        cleanMsg = cleanMsg.replace("&#128172;", "").replace("&#128206;", "").replace("&nbsp;", " ")
-                .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+        // --- NEW HTML PROCESSING ---
+        String cleanMsg = convertHtmlToSlack(rawHtml);
 
+        // Filters
         if (cleanMsg.contains("(Slack):") || cleanMsg.contains("Slack:")) return ResponseEntity.ok("Ignored echo");
         if (cleanMsg.contains("📎") || cleanMsg.contains("shared file:")) return ResponseEntity.ok("Ignored file echo");
         if (cleanMsg.contains("✅") || cleanMsg.contains("❌") || cleanMsg.contains("Approved by") || cleanMsg.contains("Rejected by")) return ResponseEntity.ok("Ignored system");
+
         if (map.isDuplicate(ticketId, cleanMsg.trim())) return ResponseEntity.ok("Duplicate");
 
         String channelId = map.getChannelId(ticketId);
-        if (channelId != null && !cleanMsg.isEmpty()) {
+        if (channelId == null) {
+            System.out.println("❌ Memory Empty. No channel found for Ticket " + ticketId);
+            return ResponseEntity.ok("No mapping");
+        }
+
+        if (!cleanMsg.isEmpty()) {
             slackService.sendMessage(channelId, "👤 *" + sender + "*: " + cleanMsg);
         }
         return ResponseEntity.ok("OK");
     }
 
-    private String convertHtmlLinks(String html) {
+    // --- IMPROVED HTML CLEANER ---
+    private String convertHtmlToSlack(String html) {
         if (html == null) return "";
+        String processed = html;
+
         try {
-            Pattern pattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-            Matcher matcher = pattern.matcher(html);
+            // 1. Replace <br> and <div...> with newlines
+            processed = processed.replaceAll("(?i)<br\\s*/?>", "\n");
+            processed = processed.replaceAll("(?i)</div>", "\n");
+
+            // 2. Extract Links: <a href="URL">Text</a> -> Text (URL)
+            Pattern linkPattern = Pattern.compile("<a\\s+(?:[^>]*?\\s+)?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+            Matcher linkMatcher = linkPattern.matcher(processed);
             StringBuilder sb = new StringBuilder();
-            while (matcher.find()) matcher.appendReplacement(sb, matcher.group(2).replaceAll("\\<.*?\\>", "").trim() + " (" + matcher.group(1) + ")");
-            matcher.appendTail(sb);
-            return sb.toString();
-        } catch (Exception e) { return html; }
+            while (linkMatcher.find()) {
+                String url = linkMatcher.group(1);
+                String text = linkMatcher.group(2).replaceAll("\\<.*?\\>", "").trim();
+                if (text.isEmpty()) text = "Link";
+                linkMatcher.appendReplacement(sb, text + " (" + url + ")");
+            }
+            linkMatcher.appendTail(sb);
+            processed = sb.toString();
+
+            // 3. Extract Images: <img src="URL"> -> [Image: URL]
+            Pattern imgPattern = Pattern.compile("<img\\s+(?:[^>]*?\\s+)?src=[\"']([^\"']+)[\"'][^>]*>", Pattern.CASE_INSENSITIVE);
+            Matcher imgMatcher = imgPattern.matcher(processed);
+            sb = new StringBuilder();
+            while (imgMatcher.find()) {
+                String url = imgMatcher.group(1);
+                imgMatcher.appendReplacement(sb, " [Image: " + url + "] ");
+            }
+            imgMatcher.appendTail(sb);
+            processed = sb.toString();
+
+            // 4. Strip remaining tags
+            processed = processed.replaceAll("\\<.*?\\>", "").trim();
+
+            // 5. Decode entities
+            processed = processed.replace("&nbsp;", " ")
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#128172;", ""); // Remove the speech bubble emoji
+
+            return processed.trim();
+        } catch (Exception e) {
+            // Fallback: just strip tags if regex fails
+            return html.replaceAll("\\<.*?\\>", "");
+        }
     }
 }
