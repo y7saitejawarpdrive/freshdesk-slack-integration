@@ -19,6 +19,7 @@ public class SlackController {
     private final SlackService slackService;
     private final TicketChannelMap map;
 
+    // YOUR AGENT ID
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
 
     public SlackController(FreshdeskService freshdeskService, SlackService slackService, TicketChannelMap map) {
@@ -65,20 +66,18 @@ public class SlackController {
 
                     if (text != null && !text.isEmpty()) {
 
-                        // --- CRITICAL FIX: STOP THE LOOP ---
-                        // If the message contains phrases that THE BOT sends, ignore them immediately.
+                        // --- CRITICAL FIX: IGNORE SYSTEM MESSAGES ---
                         if (text.contains("within SLA") ||
                                 text.contains("No approval needed") ||
                                 text.contains("SLA Breach Expected") ||
+                                text.contains("Ticket details") ||         // <--- THIS STOPS THE AUTO-APPROVAL
                                 text.startsWith("ℹ️") ||
                                 text.startsWith("⚠️")) {
                             return ResponseEntity.ok(Map.of("status", "ignored_system_msg"));
                         }
 
-                        // Check if it's a Workflow (Bot with "ETA" in text)
                         boolean isWorkflowUpdate = isBot && text.toUpperCase().contains("ETA");
 
-                        // Allow Real Users OR Workflow Updates
                         if (!isBot || isWorkflowUpdate) {
 
                             String userId = (event.get("user") != null) ? event.get("user").toString() : null;
@@ -93,10 +92,12 @@ public class SlackController {
                                 int etaHours = extractNumber(text);
                                 int slaHours = freshdeskService.getTicketSlaHours(ticketId);
 
-                                if (etaHours > slaHours) {
-                                    slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
-                                } else {
-                                    slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
+                                if (etaHours > 0) { // Only check if we actually found a number
+                                    if (etaHours > slaHours) {
+                                        slackService.sendApprovalMessage(channelId, ticketId, text, SUPPORT_AGENT_ID);
+                                    } else {
+                                        slackService.sendMessage(channelId, "ℹ️ New ETA (" + etaHours + "h) is within SLA (" + slaHours + "h). No approval needed.");
+                                    }
                                 }
                             }
                         }
