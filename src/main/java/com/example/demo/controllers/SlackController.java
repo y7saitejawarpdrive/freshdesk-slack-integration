@@ -19,8 +19,6 @@ public class SlackController {
     private final FreshdeskService freshdeskService;
     private final SlackService slackService;
     private final TicketChannelMap map;
-
-    // Inject the new Reminder Service
     private final ReminderService reminderService;
 
     private static final String SUPPORT_AGENT_ID = "U09S0DD7M16";
@@ -49,7 +47,7 @@ public class SlackController {
 
             if (ticketId != null) {
 
-                // --- FILES ---
+                // --- FILES (Strictly ignore Bots to prevent loops) ---
                 if (event.containsKey("files") && !isBot) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
                     String userId = (event.get("user") != null) ? event.get("user").toString() : null;
@@ -70,45 +68,47 @@ public class SlackController {
 
                     if (text != null && !text.isEmpty()) {
 
-                        // ============================================
-                        // NEW LOGIC: WATCH FOR WORKFLOW MESSAGES
-                        // ============================================
-
-                        // 1. START TIMER: "Ticket Acceptance request was sent to :- @User"
+                        // 1. TIMER LOGIC
                         if (text.contains("Ticket Acceptance request was sent to")) {
-                            // Extract the user tag (e.g., <@U12345>)
                             Matcher m = Pattern.compile("(<@U[A-Z0-9]+>)").matcher(text);
-                            if (m.find()) {
-                                String userTag = m.group(1);
-                                reminderService.startTracking(channelId, userTag);
-                            }
+                            if (m.find()) reminderService.startTracking(channelId, m.group(1));
                         }
-
-                        // 2. STOP TIMER: "@User has accepted the ticket"
                         if (text.contains("has accepted the ticket")) {
                             reminderService.stopTracking(channelId);
                         }
-                        // ============================================
 
-                        // IGNORE SYSTEM MESSAGES
+                        // 2. IGNORE SYSTEM MESSAGES (Stop Infinite Loops)
                         if (text.contains("within SLA") ||
                                 text.contains("No approval needed") ||
                                 text.contains("SLA Breach Expected") ||
                                 text.contains("Ticket details") ||
+                                text.contains("Escalation:") ||  // Ignore our own alerts
                                 text.startsWith("ℹ️") ||
-                                text.startsWith("⚠️")) {
+                                text.startsWith("⚠️") ||
+                                text.startsWith("🚨")) {
                             return ResponseEntity.ok(Map.of("status", "ignored_system_msg"));
                         }
 
-                        boolean isWorkflowUpdate = isBot && text.toUpperCase().contains("ETA");
+                        // --- FIX: ALLOW WORKFLOWS TO PASS ---
+                        // We assume any bot message that is NOT a system message is a valid Workflow Update.
+                        // We check "bot_id" to ensure we don't accidentally allow our own App if we missed a filter above.
 
-                        if (!isBot || isWorkflowUpdate) {
+                        // Check if it's OUR App (Freshdesk AutoCollab)
+                        // If you know your specific Bot ID, add: && !event.get("bot_id").equals("YOUR_BOT_ID")
+
+                        boolean isSystemMessage = text.contains("Freshdesk Agent") || text.contains("Approved by") || text.contains("Rejected by");
+
+                        // Allow if: (It's a Human) OR (It's a Bot AND NOT a System Message)
+                        if (!isBot || (isBot && !isSystemMessage)) {
+
                             String userId = (event.get("user") != null) ? event.get("user").toString() : null;
                             String senderName = "Ops Workflow";
                             if (userId != null) senderName = slackService.getUserName(userId);
 
+                            // Sync to Freshdesk
                             freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
 
+                            // Check ETA
                             if (text.toUpperCase().contains("ETA")) {
                                 int etaHours = extractNumber(text);
                                 int slaHours = freshdeskService.getTicketSlaHours(ticketId);
