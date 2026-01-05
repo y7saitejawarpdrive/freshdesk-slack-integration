@@ -47,7 +47,7 @@ public class SlackController {
 
             if (ticketId != null) {
 
-                // --- FILES (Strictly ignore Bots to prevent loops) ---
+                // --- FILES ---
                 if (event.containsKey("files") && !isBot) {
                     List<Map<String, Object>> files = (List<Map<String, Object>>) event.get("files");
                     String userId = (event.get("user") != null) ? event.get("user").toString() : null;
@@ -77,36 +77,32 @@ public class SlackController {
                             reminderService.stopTracking(channelId);
                         }
 
-                        // 2. IGNORE SYSTEM MESSAGES (Stop Infinite Loops)
+                        // 2. IGNORE SYSTEM MESSAGES
                         if (text.contains("within SLA") ||
                                 text.contains("No approval needed") ||
                                 text.contains("SLA Breach Expected") ||
                                 text.contains("Ticket details") ||
-                                text.contains("Escalation:") ||  // Ignore our own alerts
+                                text.contains("Escalation:") ||
                                 text.startsWith("ℹ️") ||
                                 text.startsWith("⚠️") ||
                                 text.startsWith("🚨")) {
                             return ResponseEntity.ok(Map.of("status", "ignored_system_msg"));
                         }
 
-                        // --- FIX: ALLOW WORKFLOWS TO PASS ---
-                        // We assume any bot message that is NOT a system message is a valid Workflow Update.
-                        // We check "bot_id" to ensure we don't accidentally allow our own App if we missed a filter above.
+                        boolean isWorkflowUpdate = isBot && (text.toUpperCase().contains("ETA") || text.contains("accepted the ticket") || text.contains("refund"));
+                        boolean isMyOwnBot = text.contains("Freshdesk Agent") || text.contains("Approved by") || text.contains("Rejected by");
 
-                        // Check if it's OUR App (Freshdesk AutoCollab)
-                        // If you know your specific Bot ID, add: && !event.get("bot_id").equals("YOUR_BOT_ID")
-
-                        boolean isSystemMessage = text.contains("Freshdesk Agent") || text.contains("Approved by") || text.contains("Rejected by");
-
-                        // Allow if: (It's a Human) OR (It's a Bot AND NOT a System Message)
-                        if (!isBot || (isBot && !isSystemMessage)) {
+                        if ((!isBot || (isBot && !isMyOwnBot))) {
 
                             String userId = (event.get("user") != null) ? event.get("user").toString() : null;
                             String senderName = "Ops Workflow";
                             if (userId != null) senderName = slackService.getUserName(userId);
 
+                            // --- FIX: REPLACE <@U123> WITH @NAME ---
+                            String readableText = replaceUserMentions(text);
+
                             // Sync to Freshdesk
-                            freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + text);
+                            freshdeskService.addNote(ticketId, "💬 " + senderName + " (Slack):\n" + readableText);
 
                             // Check ETA
                             if (text.toUpperCase().contains("ETA")) {
@@ -135,5 +131,22 @@ public class SlackController {
             if (m.find()) return Integer.parseInt(m.group());
         } catch (Exception e) {}
         return 0;
+    }
+
+    // --- NEW HELPER: Converts <@U12345> to @SaiTeja ---
+    private String replaceUserMentions(String text) {
+        try {
+            Matcher m = Pattern.compile("<@(U[A-Z0-9]+)>").matcher(text);
+            StringBuffer sb = new StringBuffer();
+            while (m.find()) {
+                String uid = m.group(1);
+                String name = slackService.getUserName(uid); // Get real name from Slack
+                m.appendReplacement(sb, "@" + name);
+            }
+            m.appendTail(sb);
+            return sb.toString();
+        } catch (Exception e) {
+            return text;
+        }
     }
 }
